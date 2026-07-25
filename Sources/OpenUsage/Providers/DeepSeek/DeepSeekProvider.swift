@@ -55,7 +55,7 @@ final class DeepSeekProvider: ProviderRuntime {
             guard !lines.isEmpty else {
                 return ProviderSnapshot.error(provider: provider, error: DeepSeekUsageError.invalidResponse)
             }
-            return ProviderSnapshot.make(provider: provider, lines: lines, refreshedAt: now())
+            return ProviderSnapshot.make(provider: provider, plan: nil, lines: lines, refreshedAt: now())
         } catch {
             return ProviderSnapshot.error(provider: provider, error: DeepSeekUsageError.connectionFailed)
         }

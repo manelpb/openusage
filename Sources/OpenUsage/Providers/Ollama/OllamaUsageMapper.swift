@@ -1,6 +1,6 @@
 import Foundation
 
-struct OllamaUsageData: Sendable {
+struct OllamaUsageData: Sendable, Equatable {
     var plan: String?
     var sessionPercent: Double
     var weeklyPercent: Double
@@ -41,29 +41,89 @@ enum OllamaUsageMapper {
         )
     }
 
-    static func parseSettingsHTML(_ html: String, now: Date) -> OllamaUsageData? {
-        guard html.contains("Cloud Usage") else { return nil }
-
-        let text = stripHTML(html)
+    static func parseSettingsText(_ text: String, now: Date) -> OllamaUsageData? {
         let percentages = extractPercentages(text)
-        guard percentages.count >= 2,
-              let sessionPercent = percentages[0],
-              let weeklyPercent = percentages[1] else { return nil }
+        AppLog.info(.refresh, "ollama parse: found \(percentages.count) percentages: \(percentages)")
 
-        let resetValues = extractDataTimeValues(html)
-        let plan = extractPlan(text)
+        guard let sessionStart = text.range(of: "Session usage", options: .caseInsensitive) else { return nil }
+        let afterSession = String(text[sessionStart.lowerBound...])
 
-        let sessionSection = sectionBetween(text, startLabel: "Session usage", endLabel: "Weekly usage")
-        let weeklySection = sectionBetween(text, startLabel: "Weekly usage", endLabel: "Notify me")
+        guard let weeklyStart = afterSession.range(of: "Weekly usage", options: .caseInsensitive) else { return nil }
+        let sessionSection = String(afterSession[..<weeklyStart.lowerBound])
+        let weeklySection = String(afterSession[weeklyStart.lowerBound...])
+
+        AppLog.info(.refresh, "ollama parse: sessionSection=\(sessionSection.prefix(200))")
+        AppLog.info(.refresh, "ollama parse: weeklySection=\(weeklySection.prefix(200))")
+
+        let sessionPercent: Double
+        let weeklyPercent: Double
+
+        if percentages.count >= 2 {
+            sessionPercent = percentages[0] ?? 0
+            weeklyPercent = percentages[1] ?? 0
+        } else if percentages.count == 1 {
+            if sessionSection.contains("%") {
+                sessionPercent = percentages[0] ?? 0
+                weeklyPercent = 0
+                AppLog.info(.refresh, "ollama parse: assign to session (section has %)")
+            } else {
+                // Single percentage in weekly section means session is blocked (weekly limit reached).
+                // Show session as 100% used so "remaining" mode shows 0% left — accurate since
+                // the user can't start new sessions.
+                sessionPercent = 100
+                weeklyPercent = percentages[0] ?? 0
+                AppLog.info(.refresh, "ollama parse: assign to weekly, session blocked (100% used)")
+            }
+        } else {
+            return nil
+        }
+
+        let sessionResetsAt = extractSessionReset(sessionSection, now: now) ?? extractRelativeReset(sessionSection, now: now)
+        let weeklyResetsAt = extractRelativeReset(weeklySection, now: now)
+
+        AppLog.info(.refresh, "ollama parse: session=\(sessionPercent)% resets=\(String(describing: sessionResetsAt)), weekly=\(weeklyPercent)% resets=\(String(describing: weeklyResetsAt))")
 
         return OllamaUsageData(
-            plan: plan,
+            plan: nil,
             sessionPercent: sessionPercent,
             weeklyPercent: weeklyPercent,
-            sessionResetsAt: resetValues.first ?? relativeReset(sessionSection, now: now),
-            weeklyResetsAt: resetValues.count > 1 ? resetValues[1] : relativeReset(weeklySection, now: now),
+            sessionResetsAt: sessionResetsAt,
+            weeklyResetsAt: weeklyResetsAt,
             source: "settings"
         )
+    }
+
+    private static func extractSessionReset(_ text: String, now: Date) -> Date? {
+        let pattern = try! NSRegularExpression(pattern: #"Sessions resume in\s+(\d+)\s*(day|days|hour|hours|minute|minutes)"#, options: .caseInsensitive)
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = pattern.firstMatch(in: text, range: range) else { return nil }
+        let nsText = text as NSString
+        let amountStr = nsText.substring(with: match.range(at: 1))
+        let unit = nsText.substring(with: match.range(at: 2)).lowercased()
+        guard let amount = Double(amountStr) else { return nil }
+        let factor: Double
+        if unit.hasPrefix("minute") { factor = 60 }
+        else if unit.hasPrefix("hour") { factor = 3600 }
+        else { factor = 86400 }
+        return now.addingTimeInterval(amount * factor)
+    }
+
+    private static func extractRelativeReset(_ text: String, now: Date) -> Date? {
+        let pattern = try! NSRegularExpression(pattern: #"Resets in\s+(?:less than\s+)?(\d+(?:\.\d+)?)\s*(second|seconds|minute|minutes|min|m|hour|hours|h|day|days|d|week|weeks|w)"#, options: .caseInsensitive)
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = pattern.firstMatch(in: text, range: range) else { return nil }
+        let nsText = text as NSString
+        let amountStr = nsText.substring(with: match.range(at: 1))
+        let unit = nsText.substring(with: match.range(at: 2)).lowercased()
+        guard let amount = Double(amountStr), amount >= 0 else { return nil }
+        let factor: Double
+        if unit.hasPrefix("second") || unit == "s" { factor = 1 }
+        else if unit.hasPrefix("minute") || unit == "min" || unit == "m" { factor = 60 }
+        else if unit.hasPrefix("hour") || unit == "h" { factor = 3600 }
+        else if unit.hasPrefix("day") || unit == "d" { factor = 86400 }
+        else if unit.hasPrefix("week") || unit == "w" { factor = 604800 }
+        else { return nil }
+        return now.addingTimeInterval(amount * factor)
     }
 
     static func buildLines(from data: OllamaUsageData) -> [MetricLine] {
@@ -107,22 +167,22 @@ enum OllamaUsageMapper {
 
     private static func stripHTML(_ html: String) -> String {
         var text = html
-        text = text.replacingOccurrences(of: /<script[\s\S]*?<\/script>/, with: " ", options: .regularExpression)
-        text = text.replacingOccurrences(of: /<style[\s\S]*?<\/style>/, with: " ", options: .regularExpression)
-        text = text.replacingOccurrences(of: /<[^>]+>/, with: " ", options: .regularExpression)
+        text = text.replacing(/<script[\s\S]*?<\/script>/, with: " ")
+        text = text.replacing(/<style[\s\S]*?<\/style>/, with: " ")
+        text = text.replacing(/<[^>]+>/, with: " ")
         text = text.replacingOccurrences(of: "&nbsp;", with: " ")
         text = text.replacingOccurrences(of: "&amp;", with: "&")
         text = text.replacingOccurrences(of: "&lt;", with: "<")
         text = text.replacingOccurrences(of: "&gt;", with: ">")
-        text = text.replacingOccurrences(of: /&#(\d+);/, with: "") { m in
+        text = text.replacing(/&#(\d+);/) { m in
             guard let n = Int(m.output.1) else { return "" }
             return String(Character(UnicodeScalar(n)!))
         }
-        text = text.replacingOccurrences(of: /&#x([0-9a-f]+);/, with: "") { m in
+        text = text.replacing(/&#x([0-9a-f]+);/) { m in
             guard let n = Int(m.output.1, radix: 16) else { return "" }
             return String(Character(UnicodeScalar(n)!))
         }
-        return text.replacingOccurrences(of: /\s+/, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        return text.replacing(/\s+/, with: " ").trimmingCharacters(in: .whitespaces)
     }
 
     private static func extractPercentages(_ text: String) -> [Double?] {

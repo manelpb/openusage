@@ -254,6 +254,11 @@ final class AppContainer {
         FirstRunSeeder.reseed(providers: providers, enablement: enablement)
     }
 
+    func acceptSnapshot(_ snapshot: ProviderSnapshot, for providerID: String) {
+        guard let ollama = providers.compactMap({ $0 as? OllamaProvider }).first else { return }
+        ollama.acceptSnapshot(snapshot)
+    }
+
     /// Drives live updates: refresh on launch, then again every refresh interval. Each pass honors the
     /// cache, so it only hits the network once a snapshot has actually expired. `@Observable` propagates
     /// the resulting snapshot changes to the menu-bar label and any open widgets, so the UI refreshes on

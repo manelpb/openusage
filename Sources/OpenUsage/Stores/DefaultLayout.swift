@@ -68,6 +68,7 @@ enum DefaultLayout {
         "codex.session", "codex.weekly",
         "cursor.auto", "cursor.api",
         "copilot.premium",
+        "ollama.session",
         "openrouter.credits",
         "zai.session", "zai.weekly"
     ]
@@ -123,9 +124,6 @@ enum DefaultLayout {
         // sit below the caret.
         "openrouter.today", "openrouter.week", "openrouter.month", "openrouter.keyLimit",
         // Z.ai: Session meter stays above the fold; Web Searches (monthly count) sits below the caret.
-        "zai.webSearches",
-
-        // Ollama: Session stays above the fold; Weekly sits below the caret.
-        "ollama.weekly"
+        "zai.webSearches"
     ]
 }

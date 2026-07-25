@@ -12,6 +12,7 @@ struct DashboardContentView: View {
 
     @Binding var reorderLift: ReorderLift?
     @Binding var scrollPosition: ScrollPosition
+    var onSignIn: ((String) -> Void)?
 
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
     @AppStorage(TotalSpendSetting.key) private var showTotalSpend = true
@@ -64,7 +65,8 @@ struct DashboardContentView: View {
         } else {
             WidgetGroupedListView(
                 reorderSpaceName: reorderSpaceName,
-                reorderLift: $reorderLift
+                reorderLift: $reorderLift,
+                onSignIn: onSignIn
             )
         }
     }

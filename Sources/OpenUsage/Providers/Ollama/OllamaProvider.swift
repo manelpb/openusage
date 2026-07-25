@@ -15,6 +15,17 @@ final class OllamaProvider: ProviderRuntime {
     let authStore: OllamaAuthStore
     let usageClient: OllamaUsageClient
     let now: @Sendable () -> Date
+    private var lastGoodSnapshot: ProviderSnapshot? = {
+        guard let data = UserDefaults.standard.data(forKey: "ollama_last_snapshot") else { return nil }
+        return try? JSONDecoder().decode(ProviderSnapshot.self, from: data)
+    }()
+
+    func acceptSnapshot(_ snapshot: ProviderSnapshot) {
+        lastGoodSnapshot = snapshot
+        if let data = try? JSONEncoder().encode(snapshot) {
+            UserDefaults.standard.set(data, forKey: "ollama_last_snapshot")
+        }
+    }
 
     init(
         authStore: OllamaAuthStore = OllamaAuthStore(),
@@ -36,8 +47,10 @@ final class OllamaProvider: ProviderRuntime {
     }
 
     func hasLocalCredentials() async -> Bool {
-        await loadOffMainActor { [authStore] in authStore.loadSessionCookie() } != nil
-            || await loadOffMainActor { [authStore] in authStore.loadAPIKey() } != nil
+        if await loadOffMainActor({ [authStore] in authStore.loadSessionCookie() }) != nil {
+            return true
+        }
+        return await loadOffMainActor({ [authStore] in authStore.loadAPIKey() }) != nil
     }
 
     func refresh() async -> ProviderSnapshot {
@@ -53,27 +66,19 @@ final class OllamaProvider: ProviderRuntime {
     }
 
     private func refreshWithCookie(_ cookie: OllamaSessionCookie) async -> ProviderSnapshot {
-        do {
-            let response = try await usageClient.fetchSettings(cookie: cookie.value)
-            let status = response.statusCode
-            if status == 302 || status == 303 || status == 307 || status == 308 {
-                return ProviderSnapshot.error(provider: provider, error: OllamaAuthError.sessionExpired)
+        let snapshot = await OllamaBackgroundRefresher(provider: provider, now: now).refresh(cookie: cookie.value)
+        if let snapshot {
+            AppLog.info(.refresh, "ollama provider: lines=\(snapshot.lines.map { "\($0.label)" })")
+            lastGoodSnapshot = snapshot
+            if let data = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(data, forKey: "ollama_last_snapshot")
             }
-            if status == 401 || status == 403 {
-                return ProviderSnapshot.error(provider: provider, error: OllamaAuthError.sessionExpired)
-            }
-            guard (200..<300).contains(status) else {
-                return ProviderSnapshot.error(provider: provider, error: OllamaUsageError.requestFailed(status))
-            }
-            guard let html = String(data: response.body, encoding: .utf8),
-                  let data = OllamaUsageMapper.parseSettingsHTML(html, now: now()) else {
-                return ProviderSnapshot.error(provider: provider, error: OllamaUsageError.parseFailed)
-            }
-            let lines = OllamaUsageMapper.buildLines(from: data)
-            return ProviderSnapshot.make(provider: provider, plan: data.plan, lines: lines, refreshedAt: now())
-        } catch {
-            return ProviderSnapshot.error(provider: provider, error: OllamaUsageError.connectionFailed)
+            return snapshot
         }
+        if let cached = lastGoodSnapshot {
+            return cached
+        }
+        return ProviderSnapshot.error(provider: provider, error: OllamaUsageError.parseFailed)
     }
 
     private func refreshWithAPIKey(_ apiKey: String) async -> ProviderSnapshot {

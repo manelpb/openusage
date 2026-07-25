@@ -48,6 +48,13 @@ struct DashboardView: View {
     /// attaches to this panel as a sheet (see `StatusItemController`'s attached-sheet guard), so a
     /// click on its buttons can't be misread as an outside click that dismisses the popover.
     @State private var isPresentingResetAllConfirm = false
+    /// The provider ID whose in-app login sheet is currently presented (Ollama only).
+    @State private var signInProvider: SignInProvider?
+    private let ollamaAuthStore = OllamaAuthStore()
+
+    private struct SignInProvider: Identifiable {
+        var id: String
+    }
     /// Shared horizontal inset for dashboard content and fixed chrome.
     private static let outerPadding: CGFloat = 14
     /// Breathing room between the bottom of the scrolling content and the pinned footer. Kept small
@@ -235,6 +242,22 @@ struct DashboardView: View {
             // Sourced from the controller's show/hide chokepoints (`popoverShown`), not occlusion — a
             // `.canJoinAllSpaces` panel is briefly occluded mid Space-switch while still on-screen.
             .environment(\.popoverIsVisible, transparency.popoverShown)
+            .sheet(item: $signInProvider) { provider in
+                OllamaLoginView { result in
+                    try? ollamaAuthStore.saveSessionCookieToKeychain(result.cookie)
+                    if let ollamaProvider = layout.provider(id: provider.id) {
+                        let lines = OllamaUsageMapper.buildLines(from: result.data)
+                        let snapshot = ProviderSnapshot.make(
+                            provider: ollamaProvider,
+                            plan: result.data.plan,
+                            lines: lines,
+                            refreshedAt: Date()
+                        )
+                        dataStore.writeSnapshot(snapshot)
+                        container.acceptSnapshot(snapshot, for: provider.id)
+                    }
+                }
+            }
     }
 
     private func resetTransientState() {
@@ -253,6 +276,7 @@ struct DashboardView: View {
         // Dismiss a pending Reset All confirmation if the popover closes mid-alert — the SwiftUI tree
         // survives `orderOut`, so without this the sheet would reappear stale on the next open.
         isPresentingResetAllConfirm = false
+        signInProvider = nil
         // Drop the driven height so the next open re-establishes it (un-animated) from the reopened
         // screen's measurement instead of springing from this session's last value. Until then the
         // 0 sentinel keeps `PanelHeightModifier` from pushing, so the controller's opening guess stands.
@@ -373,7 +397,8 @@ struct DashboardView: View {
                 horizontalPadding: Self.outerPadding,
                 bottomGap: Self.contentBottomGap,
                 reorderLift: $reorderLift,
-                scrollPosition: $dashboardScrollPosition
+                scrollPosition: $dashboardScrollPosition,
+                onSignIn: { signInProvider = SignInProvider(id: $0) }
             )
         case .customize:
             CustomizeView(

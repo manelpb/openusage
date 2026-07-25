@@ -16,6 +16,7 @@ struct WidgetGroupedListView: View {
     @Environment(\.colorScheme) private var colorScheme
     let reorderSpaceName: String
     @Binding var reorderLift: ReorderLift?
+    var onSignIn: ((String) -> Void)?
 
     @State private var rowFrames: [String: CGRect] = [:]
     @State private var activeProviderID: String?
@@ -73,7 +74,8 @@ struct WidgetGroupedListView: View {
             warning: dataStore.headerNotice(for: group.provider.id),
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
             staleness: dataStore.stalenessHint(for: group.provider.id),
-            onCopyScreenshot: { shareCard(group) }
+            onCopyScreenshot: { shareCard(group) },
+            onSignIn: onSignIn.map { callback in { callback(group.provider.id) } }
         )
         // Keep the provider mark and hover-revealed copy control aligned with the card's content edges.
         .padding(.horizontal, 8)

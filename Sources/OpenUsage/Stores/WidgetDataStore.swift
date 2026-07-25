@@ -368,6 +368,18 @@ final class WidgetDataStore {
         failureRetryAfter[providerID] = nil
     }
 
+    /// Writes a pre-built snapshot directly, bypassing the provider's refresh. Used when data is
+    /// extracted from a WKWebView (e.g. Ollama in-app login) rather than fetched via HTTP.
+    func writeSnapshot(_ snapshot: ProviderSnapshot) {
+        let providerID = snapshot.providerID
+        providerErrors[providerID] = nil
+        failureRetryAfter[providerID] = nil
+        localSnapshots[providerID] = snapshot
+        cache.store(snapshot, producedByIdentityKey: providerIdentityKeys[providerID])
+        rebuildRenderedSnapshots()
+        AppLog.info(.refresh, "\(providerID) snapshot written directly")
+    }
+
     /// Rebuild the in-memory union immediately after a provider toggle. Local cached data remains
     /// available to direct API reads, but disabled providers stop receiving peer contributions.
     func providerEnablementDidChange() {
@@ -541,6 +553,9 @@ final class WidgetDataStore {
         if let snapshot = snapshots[descriptor.providerID],
            let line = snapshot.line(label: descriptor.metricLabel),
            let data = resolve(line, descriptor: descriptor) {
+            if descriptor.providerID == "ollama" {
+                AppLog.info(.refresh, "ollama widget: id=\(descriptor.id) metricLabel=\(descriptor.metricLabel) found=\(line.label) used=\(data.used)")
+            }
             result = data
         } else {
             // No real metric line backs this placed tile, so the sample's numbers are placeholders.
