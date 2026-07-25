@@ -75,7 +75,7 @@ struct WidgetGroupedListView: View {
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
             staleness: dataStore.stalenessHint(for: group.provider.id),
             onCopyScreenshot: { shareCard(group) },
-            onSignIn: group.provider.id == "ollama"
+            onSignIn: group.provider.supportsInAppSignIn
                 ? onSignIn.map { callback in { callback(group.provider.id) } }
                 : nil
         )

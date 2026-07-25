@@ -9,12 +9,14 @@ struct Provider: Identifiable, Hashable {
     /// Declared inline by each provider; mirrors the legacy Tauri `PluginMeta.links`. Empty by default so
     /// providers without links and the existing `Provider(id:displayName:icon:)` call sites need no change.
     let links: [ProviderLink]
+    var supportsInAppSignIn: Bool
 
-    init(id: String, displayName: String, icon: IconSource, links: [ProviderLink] = []) {
+    init(id: String, displayName: String, icon: IconSource, links: [ProviderLink] = [], supportsInAppSignIn: Bool = false) {
         self.id = id
         self.displayName = displayName
         self.icon = icon
         self.links = links
+        self.supportsInAppSignIn = supportsInAppSignIn
     }
 
     /// Links safe to render: trimmed, non-empty label and URL, and an `http(s)` scheme only. Mirrors the

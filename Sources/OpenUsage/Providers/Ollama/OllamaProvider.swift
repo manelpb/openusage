@@ -9,7 +9,8 @@ final class OllamaProvider: ProviderRuntime {
         links: [
             ProviderLink(label: "Settings", url: "https://ollama.com/settings"),
             ProviderLink(label: "Keys", url: "https://ollama.com/settings/keys")
-        ]
+        ],
+        supportsInAppSignIn: true
     )
 
     let authStore: OllamaAuthStore
