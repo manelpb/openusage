@@ -216,8 +216,10 @@ final class LocalLimitsAPITests: XCTestCase {
             "cursor": ["totalUsage", "autoUsage", "apiUsage", "onDemand", "requests", "credits"],
             "antigravity": ["geminiSession", "geminiWeekly", "nonGeminiSession", "nonGeminiWeekly"],
             "copilot": ["premiumCredits", "extraUsage", "orgCredits", "orgSpend", "chat", "completions"],
+            "deepseek": ["balance"],
             "devin": ["daily", "weekly", "extraUsageBalance"],
             "grok": ["weekly"],
+            "ollama": ["session", "weekly"],
             "opencode": ["session", "weekly", "monthly"],
             "openrouter": ["credits", "balance", "keyLimit"],
             "zai": ["session", "weekly", "webSearches"]
