@@ -66,19 +66,24 @@ final class OllamaProvider: ProviderRuntime {
     }
 
     private func refreshWithCookie(_ cookie: OllamaSessionCookie) async -> ProviderSnapshot {
-        let snapshot = await OllamaBackgroundRefresher(provider: provider, now: now).refresh(cookie: cookie.value)
-        if let snapshot {
-            AppLog.info(.refresh, "ollama provider: lines=\(snapshot.lines.map { "\($0.label)" })")
-            lastGoodSnapshot = snapshot
-            if let data = try? JSONEncoder().encode(snapshot) {
-                UserDefaults.standard.set(data, forKey: "ollama_last_snapshot")
-            }
-            return snapshot
+        guard let text = await WebPageRefresher().fetchText(
+            url: "https://ollama.com/settings",
+            cookies: [WebPageRefresher.Cookie(
+                name: OllamaAuthStore.sessionCookieName,
+                value: cookie.value,
+                domain: ".ollama.com"
+            )]
+        ), let data = OllamaUsageMapper.parseSettingsText(text, now: now()) else {
+            if let cached = lastGoodSnapshot { return cached }
+            return ProviderSnapshot.error(provider: provider, error: OllamaUsageError.parseFailed)
         }
-        if let cached = lastGoodSnapshot {
-            return cached
+        let lines = OllamaUsageMapper.buildLines(from: data)
+        let snapshot = ProviderSnapshot.make(provider: provider, plan: data.plan, lines: lines, refreshedAt: now())
+        lastGoodSnapshot = snapshot
+        if let encoded = try? JSONEncoder().encode(snapshot) {
+            UserDefaults.standard.set(encoded, forKey: "ollama_last_snapshot")
         }
-        return ProviderSnapshot.error(provider: provider, error: OllamaUsageError.parseFailed)
+        return snapshot
     }
 
     private func refreshWithAPIKey(_ apiKey: String) async -> ProviderSnapshot {

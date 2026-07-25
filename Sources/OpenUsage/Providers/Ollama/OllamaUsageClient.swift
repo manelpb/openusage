@@ -1,29 +1,12 @@
 import Foundation
 
 struct OllamaUsageClient: Sendable {
-    static let settingsURL = "https://ollama.com/settings"
     static let accountUsageURL = "https://ollama.com/api/account/usage"
 
     var http: any HTTPClient
 
     init(http: any HTTPClient = URLSessionHTTPClient()) {
         self.http = http
-    }
-
-    func fetchSettings(cookie: String) async throws -> HTTPResponse {
-        guard let url = URL(string: Self.settingsURL) else {
-            throw OllamaUsageError.invalidResponse
-        }
-        return try await http.send(HTTPRequest(
-            method: "GET",
-            url: url,
-            headers: [
-                "Accept": "text/html",
-                "Cookie": "\(OllamaAuthStore.sessionCookieName)=\(cookie)",
-                "User-Agent": "OpenUsage"
-            ],
-            timeout: 10
-        ))
     }
 
     func fetchAccountUsage(apiKey: String) async throws -> HTTPResponse {

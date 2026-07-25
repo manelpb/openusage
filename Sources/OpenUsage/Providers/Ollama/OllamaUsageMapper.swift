@@ -165,26 +165,6 @@ enum OllamaUsageMapper {
         return max(0, min(100, n))
     }
 
-    private static func stripHTML(_ html: String) -> String {
-        var text = html
-        text = text.replacing(/<script[\s\S]*?<\/script>/, with: " ")
-        text = text.replacing(/<style[\s\S]*?<\/style>/, with: " ")
-        text = text.replacing(/<[^>]+>/, with: " ")
-        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
-        text = text.replacingOccurrences(of: "&amp;", with: "&")
-        text = text.replacingOccurrences(of: "&lt;", with: "<")
-        text = text.replacingOccurrences(of: "&gt;", with: ">")
-        text = text.replacing(/&#(\d+);/) { m in
-            guard let n = Int(m.output.1) else { return "" }
-            return String(Character(UnicodeScalar(n)!))
-        }
-        text = text.replacing(/&#x([0-9a-f]+);/) { m in
-            guard let n = Int(m.output.1, radix: 16) else { return "" }
-            return String(Character(UnicodeScalar(n)!))
-        }
-        return text.replacing(/\s+/, with: " ").trimmingCharacters(in: .whitespaces)
-    }
-
     private static func extractPercentages(_ text: String) -> [Double?] {
         var results: [Double?] = []
         let regex = try! NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)%\s*used"#, options: .caseInsensitive)
@@ -196,53 +176,5 @@ enum OllamaUsageMapper {
             results.append(Double(numStr))
         }
         return results
-    }
-
-    private static func extractDataTimeValues(_ html: String) -> [Date?] {
-        var results: [Date?] = []
-        let regex = try! NSRegularExpression(pattern: #"data-time="([^"]+)""#)
-        let range = NSRange(html.startIndex..., in: html)
-        regex.enumerateMatches(in: html, range: range) { match, _, _ in
-            guard let match else { return }
-            let nsText = html as NSString
-            let value = nsText.substring(with: match.range(at: 1))
-            results.append(OpenUsageISO8601.date(from: value))
-        }
-        return results
-    }
-
-    private static func extractPlan(_ text: String) -> String? {
-        let regex = try! NSRegularExpression(pattern: #"Cloud Usage\s+(Free|Pro|Max|Team)\b"#, options: .caseInsensitive)
-        let range = NSRange(text.startIndex..., in: text)
-        guard let match = regex.firstMatch(in: text, range: range) else { return nil }
-        let nsText = text as NSString
-        return nsText.substring(with: match.range(at: 1))
-    }
-
-    private static func sectionBetween(_ text: String, startLabel: String, endLabel: String) -> String {
-        guard let start = text.range(of: startLabel, options: .caseInsensitive) else { return "" }
-        let after = String(text[start.lowerBound...])
-        guard let end = after.range(of: endLabel, options: .caseInsensitive) else { return after }
-        return String(after[..<end.lowerBound])
-    }
-
-    private static func relativeReset(_ section: String, now: Date) -> Date? {
-        let pattern = try! NSRegularExpression(pattern: #"Resets in\s+(?:less than\s+)?(\d+(?:\.\d+)?)\s*(second|seconds|minute|minutes|min|m|hour|hours|h|day|days|d|week|weeks|w)"#, options: .caseInsensitive)
-        let range = NSRange(section.startIndex..., in: section)
-        guard let match = pattern.firstMatch(in: section, range: range) else { return nil }
-        let nsText = section as NSString
-        let amountStr = nsText.substring(with: match.range(at: 1))
-        let unit = nsText.substring(with: match.range(at: 2)).lowercased()
-        guard let amount = Double(amountStr), amount >= 0 else { return nil }
-
-        let factor: Double
-        if unit.hasPrefix("second") || unit == "s" { factor = 1 }
-        else if unit.hasPrefix("minute") || unit == "min" || unit == "m" { factor = 60 }
-        else if unit.hasPrefix("hour") || unit == "h" { factor = 3600 }
-        else if unit.hasPrefix("day") || unit == "d" { factor = 86400 }
-        else if unit.hasPrefix("week") || unit == "w" { factor = 604800 }
-        else { return nil }
-
-        return now.addingTimeInterval(amount * factor)
     }
 }

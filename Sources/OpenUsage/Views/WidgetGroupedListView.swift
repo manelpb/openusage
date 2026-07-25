@@ -75,7 +75,9 @@ struct WidgetGroupedListView: View {
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
             staleness: dataStore.stalenessHint(for: group.provider.id),
             onCopyScreenshot: { shareCard(group) },
-            onSignIn: onSignIn.map { callback in { callback(group.provider.id) } }
+            onSignIn: group.provider.id == "ollama"
+                ? onSignIn.map { callback in { callback(group.provider.id) } }
+                : nil
         )
         // Keep the provider mark and hover-revealed copy control aligned with the card's content edges.
         .padding(.horizontal, 8)
