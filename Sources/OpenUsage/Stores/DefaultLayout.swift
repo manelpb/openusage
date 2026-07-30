@@ -69,7 +69,7 @@ enum DefaultLayout {
         "cursor.auto", "cursor.api",
         "copilot.premium",
         "deepseek.balance",
-        "ollama.session",
+        "ollama.session", "ollama.weekly",
         "openrouter.credits",
         "zai.session", "zai.weekly"
     ]
