@@ -37,7 +37,8 @@ final class WidgetPercentClampTests: XCTestCase {
         XCTAssertEqual(used.used, 100) // sanitized at construction
         XCTAssertEqual(used.valueText, "100%")
         XCTAssertEqual(used.boundedHeadline, "100% used")
-        XCTAssertEqual(used.menuBarValue, "100%")
+        // A spent meter flags the menu bar with a "!" (critical severity), even though the number clamps.
+        XCTAssertEqual(used.menuBarValue, "100%!")
         // Overage still reads as spent — it's conveyed by the meter state, not an out-of-range number.
         XCTAssertEqual(used.meterState(), .spent)
 
@@ -45,7 +46,7 @@ final class WidgetPercentClampTests: XCTestCase {
         let remaining = store.data(for: descriptor)
         XCTAssertEqual(remaining.valueText, "0%")
         XCTAssertEqual(remaining.boundedHeadline, "0% left")
-        XCTAssertEqual(remaining.menuBarValue, "0%")
+        XCTAssertEqual(remaining.menuBarValue, "0%!")
     }
 
     // MARK: - Helper
