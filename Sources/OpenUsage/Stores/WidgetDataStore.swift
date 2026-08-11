@@ -28,6 +28,8 @@ final class WidgetDataStore {
     /// produce a negative or wildly inflated provider timing. Tests inject exact ticks.
     private let monotonicNow: () -> TimeInterval
     private let slowProviderRefreshThreshold: TimeInterval
+    /// See `defaultProviderRefreshTimeout`. Injected so tests can drive the deadline in milliseconds.
+    private let providerRefreshTimeout: TimeInterval
     /// Quota-notification preferences (three independent triggers). Injected; `nil` disables
     /// notifications entirely (tests and previews that don't wire it).
     private let notificationSettings: (@MainActor () -> NotificationSettingsStore)?
@@ -59,10 +61,16 @@ final class WidgetDataStore {
     private static let failureRetryBackoff: TimeInterval = 60
     static let defaultSlowProviderRefreshThreshold: TimeInterval = 10
     /// Hard deadline for a single provider's `refresh()` call. If the provider hasn't returned by then
-    /// the task is cancelled, the spinner stops, and the failure is surfaced like any other error.
-    /// Generous enough to cover the longest individual HTTP timeouts (Cursor CSV at 30 s) plus
-    /// credential reads and token refreshes, but short enough that a stuck provider doesn't spin forever.
-    private static let providerRefreshTimeout: TimeInterval = 30
+    /// the refresh is cancelled, the spinner stops, and the failure is surfaced like any other error.
+    ///
+    /// This is a last-resort backstop for a provider that hangs (a subprocess that never exits, a
+    /// credential read that blocks) — not a latency budget. It must therefore sit well above the sum of
+    /// the per-request timeouts a healthy provider can legitimately spend, or a slow network would turn
+    /// working providers into errors. The worst legitimate case is Cursor, whose probe is sequential:
+    /// token refresh (15s) → usage (10s, plus a 401 refresh-and-retry of another 25s) → plan (10s) →
+    /// usage summary (10s) → credits (10s) → usage CSV (30s), i.e. up to ~110s. Slowness short of the
+    /// deadline is already reported separately by `slowProviderRefreshThreshold`.
+    static let defaultProviderRefreshTimeout: TimeInterval = 120
 
     /// Rendered snapshots consumed by every UI/API surface. Equal to `localSnapshots` when iCloud sync
     /// is off; machine-local history rows are rebuilt from the union while sync is on.
@@ -130,12 +138,14 @@ final class WidgetDataStore {
         now: @escaping () -> Date = Date.init,
         monotonicNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         slowProviderRefreshThreshold: TimeInterval = WidgetDataStore.defaultSlowProviderRefreshThreshold,
+        providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
         notificationSettings: (@MainActor () -> NotificationSettingsStore)? = nil,
         postNotification: (@MainActor (String, String, String, String) async -> Bool)? = nil,
         providerIdentityKeys: [String: String] = [:],
         resolveDisplayName: (@MainActor (String) -> String?)? = nil
     ) {
         precondition(slowProviderRefreshThreshold >= 0)
+        precondition(providerRefreshTimeout > 0)
         self.registry = registry
         self.providersByID = Dictionary(uniqueKeysWithValues: providers.map { ($0.provider.id, $0) })
         self.cache = cache
@@ -145,6 +155,7 @@ final class WidgetDataStore {
         self.now = now
         self.monotonicNow = monotonicNow
         self.slowProviderRefreshThreshold = slowProviderRefreshThreshold
+        self.providerRefreshTimeout = providerRefreshTimeout
         self.notificationSettings = notificationSettings
         self.postNotification = postNotification
             ?? { idPrefix, title, subtitle, body in
@@ -258,8 +269,6 @@ final class WidgetDataStore {
     /// (disabled / unknown / already in flight) so a wake-burst's suppression is visible in the logs.
     enum RefreshOutcome: Sendable { case refreshed, failed, cacheHit, skipped, backedOff }
 
-    private enum _RefreshResult: Sendable { case snapshot(ProviderSnapshot), timeout }
-
     @discardableResult
     func refresh(
         providerID: String,
@@ -303,92 +312,74 @@ final class WidgetDataStore {
         refreshingProviderIDs.insert(providerID)
         defer { refreshingProviderIDs.remove(providerID) }
         let start = monotonicNow()
-        let result: _RefreshResult = await withCheckedContinuation { continuation in
-            var resumed = false
-            Task { @MainActor in
-                let snapshot = await ProviderRefreshContext.$isManual.withValue(force) {
-                    await provider.refresh()
-                }
-                if !resumed {
-                    resumed = true
-                    continuation.resume(returning: .snapshot(snapshot))
-                }
-            }
-            Task.detached {
-                try? await Task.sleep(
-                    nanoseconds: UInt64(Self.providerRefreshTimeout * 1_000_000_000)
-                )
-                if !resumed {
-                    resumed = true
-                    continuation.resume(returning: .timeout)
-                }
-            }
-        }
-        switch result {
-        case .timeout:
-            let message = "Refresh timed out after \(Int(Self.providerRefreshTimeout))s"
-            providerErrors[providerID] = message
+        // A provider that never returns would otherwise hold the in-flight entry — and the spinner —
+        // forever. Past the deadline, stop waiting and treat it as any other failed refresh.
+        guard var snapshot = await ProviderRefreshDeadline.snapshot(
+            from: provider,
+            force: force,
+            timeout: providerRefreshTimeout
+        ) else {
+            providerErrors[providerID] = "Refresh timed out after \(Int(providerRefreshTimeout))s"
             failureRetryAfter[providerID] = now().addingTimeInterval(Self.failureRetryBackoff)
-            AppLog.warn(.refresh, "\(providerID) timed out after \(Int(Self.providerRefreshTimeout))s")
+            AppLog.warn(.refresh, "\(providerID) timed out after \(Int(providerRefreshTimeout))s")
             onRefreshOutcome?(providerID, .failed, .network, force)
             return .failed
-        case .snapshot(var snapshot):
-            // A canceled refresh may still return if a provider's underlying work is non-throwing. Never
-            // publish that potentially partial snapshot; keep the last-good state exactly as it was.
-            guard !Task.isCancelled else {
-                AppLog.debug(.refresh, "cancelled \(providerID) refresh; keeping last-good snapshot")
-                return .skipped
-            }
-            let durationMs = durationMilliseconds(since: start)
-            if TimeInterval(durationMs) >= slowProviderRefreshThreshold * 1000 {
-                AppLog.warn(
-                    .refresh,
-                    "\(providerID) slow refresh (\(durationMs)ms, threshold=\(Int(slowProviderRefreshThreshold * 1000))ms)"
-                )
-            }
-            if let message = Self.errorMessage(in: snapshot) {
-                // Failed refresh: surface the error but keep the last good snapshot on screen rather than
-                // collapsing every row to "No data". The provider error string is already user-safe.
-                providerErrors[providerID] = message
-                // Negative-cache the failure so a wake burst can't re-probe this provider in a tight loop.
-                failureRetryAfter[providerID] = now().addingTimeInterval(Self.failureRetryBackoff)
-                AppLog.warn(.refresh, "\(providerID) failed: \(message)")
-                onRefreshOutcome?(providerID, .failed, snapshot.errorCategory, force)
-                return .failed
-            }
-            if providerErrors[providerID] != nil {
-                providerErrors[providerID] = nil
-            }
-            // Recovered: drop any backoff so the provider resumes the normal cadence immediately.
-            failureRetryAfter[providerID] = nil
-            // A provider can refresh its live limits successfully while its optional local log/CSV scan
-            // produces no result. Keep only the last-good normalized history in that case; the new plan,
-            // limits, warnings, and timestamp still win. A non-nil empty history remains authoritative and
-            // clears the old rows, because it proves the scan completed and found no usage.
-            if snapshot.usageHistory == nil,
-               let history = localSnapshots[providerID]?.usageHistory,
-               let descriptor = registry.historyDescriptorsByProvider[providerID]
-            {
-                snapshot.usageHistory = history
-                snapshot = UsageHistorySnapshotRenderer.render(
-                    local: snapshot,
-                    history: history,
-                    descriptor: descriptor,
-                    now: now(),
-                    combined: false
-                )
-                AppLog.debug(.refresh, "preserved last-good history for \(providerID) after scan miss")
-            }
-            localSnapshots[providerID] = snapshot
-            // Stamp the write with the card's launch-resolved account identity; nil (no stamp) for
-            // non-account providers and for cards whose identity didn't resolve this launch.
-            cache.store(snapshot, producedByIdentityKey: providerIdentityKeys[providerID])
-            rebuildRenderedSnapshots()
-            if notifyHistoryChange { onLocalHistoryChanged?() }
-            AppLog.info(.refresh, "\(providerID) ok (\(durationMs)ms)")
-            onRefreshOutcome?(providerID, .refreshed, nil, force)
-            return .refreshed
         }
+        // A canceled refresh may still return if a provider's underlying work is non-throwing. Never
+        // publish that potentially partial snapshot; keep the last-good state exactly as it was.
+        guard !Task.isCancelled else {
+            AppLog.debug(.refresh, "cancelled \(providerID) refresh; keeping last-good snapshot")
+            return .skipped
+        }
+        let durationMs = durationMilliseconds(since: start)
+        if TimeInterval(durationMs) >= slowProviderRefreshThreshold * 1000 {
+            AppLog.warn(
+                .refresh,
+                "\(providerID) slow refresh (\(durationMs)ms, threshold=\(Int(slowProviderRefreshThreshold * 1000))ms)"
+            )
+        }
+        if let message = Self.errorMessage(in: snapshot) {
+            // Failed refresh: surface the error but keep the last good snapshot on screen rather than
+            // collapsing every row to "No data". The provider error string is already user-safe.
+            providerErrors[providerID] = message
+            // Negative-cache the failure so a wake burst can't re-probe this provider in a tight loop.
+            failureRetryAfter[providerID] = now().addingTimeInterval(Self.failureRetryBackoff)
+            AppLog.warn(.refresh, "\(providerID) failed: \(message)")
+            onRefreshOutcome?(providerID, .failed, snapshot.errorCategory, force)
+            return .failed
+        }
+        if providerErrors[providerID] != nil {
+            providerErrors[providerID] = nil
+        }
+        // Recovered: drop any backoff so the provider resumes the normal cadence immediately.
+        failureRetryAfter[providerID] = nil
+        // A provider can refresh its live limits successfully while its optional local log/CSV scan
+        // produces no result. Keep only the last-good normalized history in that case; the new plan,
+        // limits, warnings, and timestamp still win. A non-nil empty history remains authoritative and
+        // clears the old rows, because it proves the scan completed and found no usage.
+        if snapshot.usageHistory == nil,
+           let history = localSnapshots[providerID]?.usageHistory,
+           let descriptor = registry.historyDescriptorsByProvider[providerID]
+        {
+            snapshot.usageHistory = history
+            snapshot = UsageHistorySnapshotRenderer.render(
+                local: snapshot,
+                history: history,
+                descriptor: descriptor,
+                now: now(),
+                combined: false
+            )
+            AppLog.debug(.refresh, "preserved last-good history for \(providerID) after scan miss")
+        }
+        localSnapshots[providerID] = snapshot
+        // Stamp the write with the card's launch-resolved account identity; nil (no stamp) for
+        // non-account providers and for cards whose identity didn't resolve this launch.
+        cache.store(snapshot, producedByIdentityKey: providerIdentityKeys[providerID])
+        rebuildRenderedSnapshots()
+        if notifyHistoryChange { onLocalHistoryChanged?() }
+        AppLog.info(.refresh, "\(providerID) ok (\(durationMs)ms)")
+        onRefreshOutcome?(providerID, .refreshed, nil, force)
+        return .refreshed
     }
 
     private func durationMilliseconds(since start: TimeInterval) -> Int {
