@@ -21,7 +21,10 @@ final class MenuBarContentTests: XCTestCase {
         XCTAssertEqual(content.groups.map(\.providerID), ["a", "b"])
         XCTAssertEqual(content.groups[0].metrics.map(\.id), ["a.m1", "a.m2"])
         XCTAssertEqual(content.groups[0].metrics[0].label, "Session")
-        XCTAssertEqual(content.groups[0].metrics[0].value, m1.sample.valueText)
+        // The strip renders `menuBarValue`, so a warning/critical meter carries its "!" (97/100 used)
+        // while an on-track one doesn't.
+        XCTAssertEqual(content.groups[0].metrics[0].value, "97%!")
+        XCTAssertEqual(content.groups[0].metrics[1].value, "12%")
         XCTAssertEqual(content.groups[1].metrics.map(\.id), ["b.m1"])
     }
 
