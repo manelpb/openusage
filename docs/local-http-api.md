@@ -97,7 +97,9 @@ the app and CLI; `stale` says whether that instant has passed. Refresh failures 
 `{"providerId":"…","message":"…"}` while a last-good provider snapshot remains available.
 For bounded progress resources, `unit` follows the provider's live metric format. For example, Cursor
 `totalUsage` is `percent` on percentage-based plans, `requests` on request-based Enterprise plans, and
-`usd` when Cursor reports a dollar pool.
+`usd` when Cursor reports a dollar pool. Copilot `premiumCredits` is `percent` on paid plans and a
+`credits` count on org-managed seats that only report personal `credits_used`. OpenCode `session`,
+`weekly`, and `monthly` are `percent`.
 
 ### Public resources
 
@@ -167,8 +169,6 @@ contract. Codex's combined Credits UI row becomes two scalar resources: `credits
 Line types are `progress`, `text`, `badge`, and `barChart`. A `barChart` line carries a `points` array — one `{ label, value, valueLabel? }` per day, oldest first — plus an optional `note`; `value` is the day's token count, `valueLabel` its pre-formatted readout, and `label` a localized month/day (e.g. "Mar 25"). `fetchedAt` is when the snapshot was last fetched successfully (ISO 8601).
 
 The in-app model breakdown shown when hovering spend rows is not included in this API yet. Spend rows continue to serialize as the same `text` lines so existing local integrations keep their current shape.
-
-In both response shapes, `displayName` is the card's current name — if you renamed a card in the app, the rename shows here too. Match on `providerId` (or the envelope key), never on the name.
 
 ## Errors
 

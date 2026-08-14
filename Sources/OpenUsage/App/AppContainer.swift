@@ -1,4 +1,5 @@
 import Foundation
+import KeyboardShortcuts
 import Observation
 
 /// Composition root: owns the (constant) registry and the (mutable) stores, injected
@@ -40,9 +41,6 @@ final class AppContainer {
     /// provider were ever removed from the registry. Injected into the view tree via
     /// `\.codexResetClaim`.
     let codexResetClaim: CodexResetClaimService?
-    /// The account registry the launch pass reconciled. The UI observes it live: a rename
-    /// (`customLabel`) re-titles the card everywhere without a relaunch.
-    let accounts: ProviderAccountsStore
     /// The provider runtimes, kept so on-demand credential detection (the Customize "Reset All" reseed)
     /// can re-probe `hasLocalCredentials()` the same way first-run seeding does.
     private let providers: [ProviderRuntime]
@@ -69,17 +67,11 @@ final class AppContainer {
         // Once the capture lands, persist its identity-relevant facts so the NEXT launch has them
         // even if that launch's own capture is slow (see `ShellEnvironmentSnapshot`).
         self.shellEnvironmentSnapshotTask = ShellEnvironmentSnapshotStore(defaults: .standard).startRefreshTask()
-        // The launch account pass: which account is signed in at each family's default home, plus
-        // the config-dir scan for extra Claude logins. Feeds the snapshot cache's account stamp,
-        // reconciles the account registry, and hands the catalog its extra-card build plan.
-        let accounts = ProviderAccountsStore()
-        let accountAssembly = ProviderAccountAssembly.make(accountsStore: accounts, waitsForLoginShell: true)
-        self.accounts = accounts
+        // The launch account pass: which account is signed in at each family's default home. Feeds
+        // the snapshot cache's account stamp and reconciles the account registry.
+        let accountAssembly = ProviderAccountAssembly.make(waitsForLoginShell: true)
 
-        let providers = ProviderCatalog.make(
-            claudeCards: accountAssembly.claudeCards,
-            defaultClaudeExtraLogRoots: accountAssembly.defaultClaudeExtraLogRoots
-        )
+        let providers = ProviderCatalog.make()
         let registry = WidgetRegistry.from(providers)
         let apiKeyProviders = providers.compactMap { $0 as? any APIKeyManaging }
         let enablement = ProviderEnablementStore()
@@ -94,8 +86,7 @@ final class AppContainer {
             isProviderEnabled: { [enablement] in enablement.isEnabled($0) },
             orderedDescriptors: { [layout] in layout.visiblePlaced.compactMap { layout.descriptor(for: $0) } },
             notificationSettings: { notificationSettings },
-            providerIdentityKeys: accountAssembly.identityKeysByCard,
-            resolveDisplayName: { [accounts] in accounts.resolvedDisplayName(cardID: $0) }
+            providerIdentityKeys: accountAssembly.identityKeysByCard
         )
         let iCloudSync = ICloudUsageSyncStore(dataStore: dataStore)
         // Re-enabling a provider should fetch it promptly, so clear any leftover failure backoff before
@@ -204,7 +195,7 @@ final class AppContainer {
         self.telemetry = telemetry
         self.transparency = PopoverTransparencyStore()
         self.privacy = MenuBarPrivacyStore()
-        self.localAPI = LocalUsageServer(state: { [layout, enablement, dataStore, accounts] in
+        self.localAPI = LocalUsageServer(state: { [layout, enablement, dataStore] in
             LocalUsageAPI.State(
                 enabledOrderedIDs: layout.orderedProviderIDs().filter { enablement.isEnabled($0) },
                 knownIDs: Set(registry.providers.map(\.id)),
@@ -212,9 +203,6 @@ final class AppContainer {
                 limitDescriptors: registry.limitDescriptorsByProvider,
                 errors: dataStore.providerErrors
             )
-            // API output is human-read too: resolve card titles at respond time so renames show,
-            // exactly like every UI surface.
-            .resolvingDisplayNames(accounts.resolvedDisplayNamesByCardID)
         })
         self.refreshTask = Self.startPeriodicRefresh(dataStore: dataStore, telemetry: telemetry)
         localAPI.start()
@@ -231,27 +219,46 @@ final class AppContainer {
         shellEnvironmentSnapshotTask.cancel()
     }
 
-    /// The name a card renders under right now — the app-side face of the one resolver
-    /// (`ProviderAccountRecord.resolvedDisplayName`). Live: a rename in the account registry
-    /// re-titles the card everywhere without a relaunch. Non-account providers (no record) keep
-    /// their static display name; `Provider.displayName` itself only ever carries the derived
-    /// default, so the fallback can never be a stale rename.
-    func displayName(for provider: Provider) -> String {
-        accounts.resolvedDisplayName(cardID: provider.id) ?? provider.displayName
-    }
-
-    /// Whether the card has an account record a rename can attach to (accounts-model families only,
-    /// and only once the account's identity has been observed at least once).
-    func canRename(_ providerID: String) -> Bool {
-        accounts.records.contains { $0.id == providerID }
-    }
-
     /// Re-runs first-launch credential detection on demand — the enablement half of the Customize
     /// "Reset All" action (`LayoutStore.resetToDefault` handles metrics, order, pins, and expansion).
     /// Delegates to `FirstRunSeeder.reseed`; returns its detection task so callers can await it.
     @discardableResult
     func reseedEnabledProviders() -> Task<Void, Never> {
         FirstRunSeeder.reseed(providers: providers, enablement: enablement)
+    }
+
+    /// The Settings "Reset All Settings" action: restores every user preference the container owns to
+    /// its default (see `docs/settings.md` § Reset). Composes the Customize reset (`resetToDefault` +
+    /// provider reseed) with the Settings-only preferences. Deliberately untouched: telemetry (the
+    /// opt-out choice and install id stay independent of settings changes — see the `TelemetryStore`
+    /// note above), the iCloud sync device identity, provider credentials, and cached usage snapshots.
+    /// Launch at Login and the Sparkle update preferences live outside the container; the Settings
+    /// screen resets those alongside this call.
+    func resetAllSettings() {
+        layout.resetToDefault()
+        // The menu-bar Icon Style is a Settings preference, not part of the Customize layout reset.
+        layout.menuBarStyle = .text
+        reseedEnabledProviders()
+        dataStore.resetDisplaySettings()
+        notificationSettings.resetToDefaults()
+        transparency.resetToDefaults()
+        privacy.hideUsageWhileScreenSharing = false
+        // Same as flipping the Settings toggle off: stops syncing and removes this Mac's document
+        // from the shared iCloud container (peers keep their own history).
+        iCloudSync.enabled = false
+        // Removing an `@AppStorage` key restores its declared default; the Settings screen's
+        // `@AppStorage` properties observe the change. New settings must be added here.
+        for key in [
+            AppearanceSetting.key, TimeFormatSetting.key, DensitySetting.key,
+            ReduceAnimationsSetting.key, LogLevelSetting.key, TotalSpendSetting.key,
+            TotalSpendSetting.periodKey, TotalSpendSetting.metricKey,
+        ] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        KeyboardShortcuts.reset(.togglePopover)
+        AppearanceSetting.applyCurrent()
+        AppLog.reloadLevel()
+        AppLog.info(.config, "All settings reset to defaults")
     }
 
     /// Drives live updates: refresh on launch, then again every refresh interval. Each pass honors the
