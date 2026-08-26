@@ -250,9 +250,10 @@ struct WidgetData: Hashable {
                 // Percent is the only bounded unit that should collapse to a tray percentage. Clamp both
                 // ends so a provider sample can never print "-5%" or "105%" beside the icon.
                 let percent = min(100, max(0, Int((displayedValue / limit * 100).rounded())))
-                // A warning/critical meter (close to or past the limit) gets a "!" so the menu bar flags
-                // it without color. `meterState()` is the single source of truth for severity.
-                let marker = meterState().severity.map { $0 == .normal ? "" : "!" } ?? ""
+                // Only a critical (red, ≥90%) meter flags the menu bar with a "!"; a warning (amber)
+                // meter stays plain so the strip signals urgency without crying wolf. `meterState()`
+                // is the single source of truth for severity.
+                let marker = meterState().severity.map { $0 == .critical ? "!" : "" } ?? ""
                 return "\(percent)%\(marker)"
             }
             return MetricFormatter.number(displayedValue, kind: kind, style: .tray)

@@ -22,9 +22,9 @@ final class WidgetPercentClampTests: XCTestCase {
                 XCTAssertEqual(data.used, clamped, suite)
                 XCTAssertEqual(data.valueText, value, suite)
                 XCTAssertEqual(data.boundedHeadline, "\(value) \(word)", suite)
-                // The fork's menu-bar severity flag appends "!" to warning/critical meters. Mirror the
-                // renderer's source of truth (`meterState().severity`) so clamping is still asserted.
-                let menuBarMarker = data.meterState().severity.map { $0 == .normal ? "" : "!" } ?? ""
+                // The fork's menu-bar severity flag appends "!" to critical (red) meters only. Mirror
+                // the renderer's source of truth (`meterState().severity`) so clamping is still asserted.
+                let menuBarMarker = data.meterState().severity.map { $0 == .critical ? "!" : "" } ?? ""
                 XCTAssertEqual(data.menuBarValue, value + menuBarMarker, suite)
                 XCTAssertEqual(data.meterStyleTooltip, opposite, suite)
             }

@@ -21,11 +21,17 @@ final class MenuBarContentTests: XCTestCase {
         XCTAssertEqual(content.groups.map(\.providerID), ["a", "b"])
         XCTAssertEqual(content.groups[0].metrics.map(\.id), ["a.m1", "a.m2"])
         XCTAssertEqual(content.groups[0].metrics[0].label, "Session")
-        // The strip renders `menuBarValue`, so a warning/critical meter carries its "!" (97/100 used)
+        // The strip renders `menuBarValue`, so a critical (red, 97/100 used) meter carries its "!"
         // while an on-track one doesn't.
         XCTAssertEqual(content.groups[0].metrics[0].value, "97%!")
         XCTAssertEqual(content.groups[0].metrics[1].value, "12%")
         XCTAssertEqual(content.groups[1].metrics.map(\.id), ["b.m1"])
+    }
+
+    func testWarningMeterCarriesNoExclamation() {
+        // A warning (amber, 85%) meter stays plain — only critical (red) flags the strip.
+        let content = MenuBarContentBuilder.build(groups: [group("a", percent("a.warn", "Warn", 85))], data: { $0.sample })
+        XCTAssertEqual(content.groups[0].metrics.map(\.value), ["85%"])
     }
 
     func testBarsIncludeBoundedMetricsAndDropUnbounded() {
