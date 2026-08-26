@@ -25,8 +25,12 @@ APP_DISPLAY="OpenUsage"                 # user-facing app name
 BUNDLE_ID="${BUNDLE_ID:-com.robinebers.openusage.dev}"
 ICLOUD_CONTAINER_ID="iCloud.com.robinebers.openusage.dev"
 MIN_SYSTEM_VERSION="15.0"
-APP_VERSION="0.7.0"
-APP_BUILD="0.7.0"
+# Dev builds derive the version from the nearest reachable git tag (upstream's release tags come in
+# with every merge), plus the fork's own commit, so a build is traceable to an exact revision. Falls
+# back to a placeholder if the repo has no tags. APP_BUILD stays numeric (Sparkle compares builds by
+# CFBundleVersion), while APP_VERSION keeps the human pre-release suffix and the short commit hash.
+APP_VERSION="$(git describe --tags 2>/dev/null | tr -d v || echo 0.7.0)"
+APP_BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 0)"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
