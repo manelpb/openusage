@@ -24,8 +24,8 @@ import Foundation
 /// - A `token_count` line whose cumulative `total_token_usage` is unchanged from the previous line
 ///   is a re-emitted stale snapshot, not new usage, and is skipped even when it carries a
 ///   `last_token_usage`.
-/// - Early sessions without model metadata fall back to `gpt-5`; the retired `codex-auto-review`
-///   slug maps to the codex model that was current at the line's date.
+/// - Early sessions without model metadata fall back to `gpt-5`. The `codex-auto-review` slug stays
+///   visible in usage breakdowns and carries a dated fallback model only for cost estimation.
 /// - Identical events (same timestamp + model + token counts) appearing in multiple files (copied
 ///   session logs) count once.
 /// - Cost per event: `(input - cached) x input rate + cached x cache-read rate + output x output
@@ -49,6 +49,7 @@ actor CodexLogUsageScanner {
     struct Event: Codable, Sendable, Equatable {
         var timestamp: Date
         var model: String
+        var pricingModel: String? = nil
         var input: Int
         var cached: Int
         var output: Int
@@ -61,7 +62,7 @@ actor CodexLogUsageScanner {
     /// once. The version is the parser schema version; bump it when `Event` semantics change.
     private static let sharedScanner = IncrementalJSONLScanner<Event>(
         logTag: LogTag.plugin("codex"),
-        persistence: JSONLScanCachePersistence(namespace: "codex", schemaVersion: 1)
+        persistence: JSONLScanCachePersistence(namespace: "codex", schemaVersion: 3)
     )
 
     static func flushPersistentCacheWrites() async {
@@ -258,13 +259,13 @@ actor CodexLogUsageScanner {
             let parsedModel = modelName(in: payload) ?? info.flatMap(modelName(in:))
             let model = resolveModel(
                 parsed: parsedModel,
-                timestamp: timestampRaw,
                 currentModel: &currentModel
             )
 
             events.append(Event(
                 timestamp: timestamp,
                 model: model,
+                pricingModel: model == Self.autoReviewModel ? autoReviewFallback(at: timestampRaw) : nil,
                 input: usage.input,
                 cached: min(usage.cached, usage.input),
                 output: usage.output,
@@ -398,13 +399,10 @@ actor CodexLogUsageScanner {
         }
     }
 
-    /// ccusage's model resolution: an explicit model on the line updates the session's current
-    /// model; otherwise the tracked model applies; a session with no metadata at all falls back to
-    /// `gpt-5`. The retired `codex-auto-review` slug maps to whichever codex model was current at
-    /// the line's date.
+    /// An explicit model on the line updates the session's current model. Otherwise the tracked
+    /// model applies, and a session with no metadata falls back to `gpt-5`.
     static func resolveModel(
         parsed: String?,
-        timestamp: String,
         currentModel: inout String?
     ) -> String {
         if let parsed {
@@ -419,9 +417,6 @@ actor CodexLogUsageScanner {
             currentModel = "gpt-5"
             model = "gpt-5"
         }
-        if model == Self.autoReviewModel {
-            model = autoReviewFallback(at: timestamp)
-        }
         return model
     }
 
@@ -429,7 +424,14 @@ actor CodexLogUsageScanner {
 
     /// `codex-auto-review` release timeline (newest first), from ccusage's embedded snapshot: a
     /// line dated on/after a release prices as that codex model.
+    ///
+    /// The `gpt-5.6-luna` entry is ours; ccusage's snapshot still stops at gpt-5.5. OpenAI moved
+    /// auto-review onto the GPT-5.6 family when it shipped on 2026-07-09, and the Codex model
+    /// catalog (`~/.codex/models_cache.json`) lists `codex-auto-review` with Luna's exact profile.
+    /// Without this entry every auto-review event since July prices at gpt-5.5 rates, which are 25x
+    /// Luna's across input, cache reads and output alike.
     private static let autoReviewFallbacks: [(releasedOn: String, model: String)] = [
+        ("2026-07-09", "gpt-5.6-luna"),
         ("2026-04-23", "gpt-5.5"),
         ("2026-03-05", "gpt-5.4"),
         ("2026-02-05", "gpt-5.3-codex"),
@@ -452,6 +454,7 @@ actor CodexLogUsageScanner {
     private struct EventKey: Hashable {
         var timestamp: Date
         var model: String
+        var pricingModel: String?
         var input: Int
         var cached: Int
         var output: Int
@@ -475,7 +478,7 @@ actor CodexLogUsageScanner {
 
         for event in events where event.timestamp >= since {
             let key = EventKey(
-                timestamp: event.timestamp, model: event.model, input: event.input,
+                timestamp: event.timestamp, model: event.model, pricingModel: event.pricingModel, input: event.input,
                 cached: event.cached, output: event.output, reasoning: event.reasoning, total: event.total
             )
             guard seen.insert(key).inserted else { continue }
@@ -488,7 +491,8 @@ actor CodexLogUsageScanner {
             guard let model = trimmedModel else {
                 continue
             }
-            let canonicalModel = pricing.supplement.canonicalName(for: model) ?? model
+            let pricingModel = event.pricingModel ?? model
+            let canonicalModel = pricing.supplement.canonicalName(for: pricingModel) ?? pricingModel
             let isFastAlias = canonicalModel.hasSuffix("-fast")
             let rateModel = isFastAlias ? String(canonicalModel.dropLast("-fast".count)) : canonicalModel
 
@@ -497,7 +501,7 @@ actor CodexLogUsageScanner {
             // If a third-party fast-only model has no base entry, retain its already-scaled rate
             // and do not apply a second speed multiplier.
             let baseRates = pricing.resolve(model: rateModel)
-            let resolvedRates = baseRates ?? pricing.resolve(model: model)
+            let resolvedRates = baseRates ?? pricing.resolve(model: pricingModel)
             guard let rates = resolvedRates else {
                 if event.total > 0 {
                     accumulator.addUnknownModel(day: day, model: model)
@@ -581,8 +585,8 @@ actor CodexLogUsageScanner {
         case "gpt-5.5": return (10, 45, 1)
         case "gpt-5.5-pro": return (60, 270, 60)
         case "gpt-5.6-sol": return (10, 45, 1)
-        case "gpt-5.6-terra": return (5, 22.5, 0.5)
-        case "gpt-5.6-luna": return (2, 9, 0.2)
+        case "gpt-5.6-terra": return (4, 18, 0.4)
+        case "gpt-5.6-luna": return (0.4, 1.8, 0.04)
         default: return nil
         }
     }

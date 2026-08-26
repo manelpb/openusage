@@ -77,10 +77,25 @@ struct WidgetData: Hashable {
     /// Rate Limit Resets → "2 resets"). Set by the descriptor, so renaming the tile can't silently drop
     /// the suffix — replaces matching on the tile's title. `nil` for tiles that show the bare value.
     var traySuffix: String?
-    /// Session-window meters (Claude/Antigravity 5-hour pools) that read "Not started" when unused.
-    /// Set by those descriptors and carried through `WidgetDataStore.resolve`, so the "fresh window"
-    /// treatment is a descriptor opt-in rather than a hardcoded widget-ID list in the model.
-    var isSessionWindow: Bool = false
+    /// Session-window meters (Claude/Antigravity/OpenCode rolling 5-hour pools) that read "Not started"
+    /// while the window hasn't begun — the value names the signal that detects that state, because the
+    /// providers report fresh windows differently (see `SessionStartSignal`). Set by those descriptors
+    /// and carried through `WidgetDataStore.resolve`, so the treatment is a descriptor opt-in rather
+    /// than a hardcoded widget-ID list in the model. `nil` for every other row.
+    var sessionStartSignal: SessionStartSignal?
+
+    /// How a session-window meter tells a not-yet-started window from an in-flight one.
+    enum SessionStartSignal: Hashable {
+        /// Zero usage is the fresh signal. These providers report a reset instant even for an
+        /// untouched window (Antigravity's mapper rounds a fresh pool's fraction-derived percent
+        /// to 0; OpenCode reports 0 directly), so `used == 0` is what marks the window as fresh.
+        case zeroUsage
+        /// A missing reset date is the fresh signal. Claude's five-hour block only exists once the
+        /// first message is sent, so a reported `resets_at` proves the window started. Zero usage is
+        /// NOT trusted here: Claude reports utilization in whole percents, so an in-flight window
+        /// under 1% also reads 0 (#1160) — the reset date is what tells the two apart.
+        case missingResetDate
+    }
     /// Per-day points for a Usage Trend row (empty for every other tile). Set true `isChart` flags the
     /// row so the view draws the sparkline instead of the value layout; `chartNote` is the source line
     /// shown on hover (e.g. "From your Claude usage history (estimated)").
@@ -564,19 +579,24 @@ extension WidgetData {
         return boundedSubtitle // period cadence / dollar limit / count suffix — nothing to flip
     }
 
-    /// Claude and Antigravity session meters only: a "Not started" state for the current window
-    /// when nothing has been spent in it yet. Driven by frozen usage (`used == 0`), not a window-timing
-    /// read — the `resetsAt - now ≈ full period` test is only valid the instant the snapshot is captured,
-    /// then drifts every second until the next refresh, which split the headline from the label (headline
-    /// "100% left" while the label fell back to "Resets in 5h"). Usage is the stable, snapshot-consistent
-    /// signal: providers that report 0 utilization directly remain at 0, and Antigravity's mapper rounds
-    /// its fraction-derived percent (so a pool under ~0.5% used also reads 0). Codex percentages are
-    /// preserved verbatim, so a reported 1% is not treated as "Not started."
-    /// Still gated on `now < resetsAt`: once the reset has passed the snapshot is stale, so we drop the
-    /// "Not started" claim and let the row fall back to the normal "Resets soon"/countdown formatting.
+    /// Session meters only (Claude/Antigravity/OpenCode): a "Not started" state for the current window
+    /// when nothing has been spent in it yet, detected through the descriptor's `sessionStartSignal`
+    /// (see `SessionStartSignal` for why each provider trusts its signal). Both signals read frozen
+    /// snapshot fields, not a `resetsAt - now ≈ full period` window-timing test — that test is only
+    /// valid the instant the snapshot is captured, then drifts every second until the next refresh,
+    /// which split the headline from the label (headline "100% left" while the label fell back to
+    /// "Resets in 5h"). `.zeroUsage` is additionally gated on `now < resetsAt`: once the reset has
+    /// passed the snapshot is stale, so we drop the "Not started" claim and let the row fall back to
+    /// the normal "Resets soon"/countdown formatting.
     func isFreshSessionWindow(now: Date = Date()) -> Bool {
-        guard isSessionWindow, hasData, limit != nil, let resetsAt, used <= 0 else { return false }
-        return now < resetsAt
+        guard let signal = sessionStartSignal, hasData, limit != nil, used <= 0 else { return false }
+        switch signal {
+        case .zeroUsage:
+            guard let resetsAt else { return false }
+            return now < resetsAt
+        case .missingResetDate:
+            return resetsAt == nil
+        }
     }
 
     /// True when the bounded primary row's trailing text is a concrete reset countdown (so the row makes

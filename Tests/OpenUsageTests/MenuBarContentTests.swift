@@ -90,17 +90,6 @@ final class MenuBarContentTests: XCTestCase {
         XCTAssertEqual(content.accessibilityText, "A Session 41%, Weekly 12%")
     }
 
-    func testAccessibilityTextUsesTheResolvedTitle() {
-        // The VoiceOver summary is a human-facing name, so it goes through the caller's resolver
-        // (the account registry) instead of the baked provider name.
-        let content = MenuBarContentBuilder.build(
-            groups: [group("a", percent("a.m1", "Session", 41))],
-            data: { $0.sample },
-            title: { _ in "Claude Team" }
-        )
-        XCTAssertEqual(content.accessibilityText, "Claude Team Session 41%")
-    }
-
     func testTrayLabelsShortenLongTimeWindows() {
         let content = MenuBarContentBuilder.build(
             groups: [group("a", percent("a.today", "Today", 5), percent("a.month", "Last 30 Days", 80))],
@@ -121,20 +110,8 @@ final class MenuBarContentTests: XCTestCase {
         XCTAssertEqual(content.groups[0].metrics.map(\.value), ["67%", "$12K", "412", "$42"])
     }
 
-    func testUnboundedNumbersAreCompacted() {
-        // Standard compact notation for big numbers; values shown in full drop their decimals.
-        let content = MenuBarContentBuilder.build(
-            groups: [group("a",
-                unbounded("a.big", "Big", 12923),         // → $12.9K
-                unbounded("a.small", "Small", 129.81))],  // → $130 (no decimals)
-            data: { $0.sample }
-        )
-
-        let big = content.groups[0].metrics[0].value
-        XCTAssertTrue(big.hasSuffix("K"), "expected compact thousands, got \(big)")
-        XCTAssertFalse(big.contains("923"), "expected the raw number to be compacted away, got \(big)")
-        XCTAssertEqual(content.groups[0].metrics[1].value, "$130")
-    }
+    // Compact-notation rules for tray values (abbreviation, decimal rounding) are pinned exactly in
+    // MetricFormatterTests — the strip only relays MetricFormatter output.
 
     // MARK: - Fixtures
 

@@ -154,6 +154,48 @@ final class ModelPricingStoreTests: XCTestCase {
         XCTAssertEqual(pricing.resolve(model: "fetched-model")?.inputPerMillion, 5)
     }
 
+    func testSupplementSelectionPrefersTheMostRecentDatedSource() async throws {
+        let scenarios: [(name: String, bundled: String?, cached: String?, expected: Double)] = [
+            ("newer bundle", "2026-06-01", "2026-01-01", 4),
+            ("same-day precise bundle", "2026-08-11T07:01:30Z", "2026-08-11", 4),
+            ("newer cache", "2026-01-01", "2026-06-01", 9),
+            ("undated cache", "2026-06-01", nil, 4),
+            ("undated bundle", nil, "2026-06-01", 9)
+        ]
+
+        for scenario in scenarios {
+            try writeSupplementCache(updatedAt: scenario.cached, autoInput: 9)
+            let pricing = await makeStoreWithBundledSupplement(updatedAt: scenario.bundled, autoInput: 4).current()
+            XCTAssertEqual(pricing.resolve(model: "auto")?.inputPerMillion, scenario.expected, scenario.name)
+        }
+    }
+
+    private static func supplementJSON(updatedAt: String?, autoInput: Double) -> String {
+        let dateField = updatedAt.map { "\"updated_at\": \"\($0)\", " } ?? ""
+        return """
+        {\(dateField)"pricing": {"auto": {"input_per_million": \(autoInput), "output_per_million": 6.0}},
+         "fast_multipliers": {}, "alias_rules": []}
+        """
+    }
+
+    private func writeSupplementCache(updatedAt: String?, autoInput: Double) throws {
+        try Data(Self.supplementJSON(updatedAt: updatedAt, autoInput: autoInput).utf8)
+            .write(to: tempDir.appendingPathComponent("supplement.json"), options: .atomic)
+    }
+
+    /// A store whose bundled supplement carries `updatedAt`, with the network dead so only the
+    /// cache-vs-bundled choice is under test.
+    private func makeStoreWithBundledSupplement(updatedAt: String?, autoInput: Double) -> ModelPricingStore {
+        let json = Self.supplementJSON(updatedAt: updatedAt, autoInput: autoInput)
+        return ModelPricingStore(
+            http: RoutingHTTPClient(handler: { _ in throw URLError(.notConnectedToInternet) }),
+            cacheDirectory: tempDir,
+            bundledData: { name in
+                name == "pricing_supplement" ? Data(json.utf8) : Self.bundledFixtures(name)
+            }
+        )
+    }
+
     func testFailureRetryIntervalPreventsHammering() async throws {
         let counter = OSAllocatedUnfairLockedCounter()
         let (store, _) = makeStore(handler: { _ in

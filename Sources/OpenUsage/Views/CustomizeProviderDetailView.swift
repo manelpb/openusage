@@ -20,7 +20,7 @@ struct CustomizeProviderDetailView: View {
     let providerID: String
     let reorderSpaceName: String
     @Binding var reorderLift: ReorderLift?
-    let rowFrames: [String: CGRect]
+    let frameStore: ReorderFrameStore
 
     @State private var activeMetricID: String?
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
@@ -28,9 +28,6 @@ struct CustomizeProviderDetailView: View {
     var body: some View {
         if let group = layout.customizeDetail(for: providerID) {
             VStack(alignment: .leading, spacing: density.sectionSpacing) {
-                if container.canRename(providerID) {
-                    CardNameSection(providerID: providerID)
-                }
                 metricSections(group)
                     .simultaneousGesture(metricDragGesture())
                 if let keyProvider = container.apiKeyProviders.first(where: { $0.provider.id == providerID }) {
@@ -137,7 +134,12 @@ struct CustomizeProviderDetailView: View {
                 reorderLift?.location = value.location
                 let divider = expandedDividerID(for: providerID)
                 let ordered = reorderTargetIDs(for: providerID)
-                guard let target = reorderTarget(at: value.location, in: rowFrames, excluding: id, orderedIDs: ordered),
+                guard let target = reorderTarget(
+                    at: value.location,
+                    in: frameStore.frames,
+                    excluding: id,
+                    orderedIDs: ordered
+                ),
                       let next = LayoutStore.reordered(ordered, dragged: id, target: target) else { return }
                 withAnimation(Motion.spring) {
                     _ = layout.applyMetricDividerOrder(next, dragged: id, dividerID: divider, in: providerID)
@@ -150,9 +152,9 @@ struct CustomizeProviderDetailView: View {
     }
 
     /// The metric a drag started on, by hit-testing the drag start against the grip frames
-    /// ("grip:<metric>" entries in `rowFrames`). Nil when the drag didn't start on a grip.
+    /// ("grip:<metric>" entries in the frame store). Nil when the drag didn't start on a grip.
     private func metricID(at point: CGPoint) -> String? {
-        for (key, frame) in rowFrames {
+        for (key, frame) in frameStore.frames {
             guard key.hasPrefix("grip:"), frame.insetBy(dx: 0, dy: -2).contains(point) else { continue }
             return String(key.dropFirst("grip:".count))
         }
@@ -169,51 +171,12 @@ struct CustomizeProviderDetailView: View {
 
     private func makeLift(metricID: String, value: DragGesture.Value) -> ReorderLift? {
         let title = layout.customizeDetail(for: providerID)?.metrics.first { $0.id == metricID }?.title ?? ""
-        return ReorderLift.make(id: metricID, payload: .customizeMetric(title: title), value: value, frames: rowFrames)
-    }
-}
-
-/// The card-name editor shown at the top of an account card's Customize detail (Claude/Codex cards
-/// with an account record). The field holds the user's rename; the placeholder shows the derived
-/// name the card falls back to, so clearing the field reads as "back to the default". Commits on
-/// Return and when focus leaves the field — never per keystroke, so half-typed names don't persist.
-private struct CardNameSection: View {
-    let providerID: String
-    @Environment(AppContainer.self) private var container
-    @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
-    @State private var draft = ""
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: density.headerToCardSpacing) {
-            Text("Name")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-            TextField(placeholder, text: $draft)
-                .textFieldStyle(.plain)
-                .focused($isFocused)
-                .onSubmit { commit() }
-                .padding(.horizontal, 12)
-                .padding(.vertical, density.controlRowPadding)
-                .cardSurface()
-        }
-        .onAppear { draft = record?.customLabel ?? "" }
-        .onChange(of: isFocused) { _, focused in
-            if !focused { commit() }
-        }
-    }
-
-    private var record: ProviderAccountRecord? {
-        container.accounts.records.first { $0.id == providerID }
-    }
-
-    private var placeholder: String {
-        record?.derivedDisplayName ?? ""
-    }
-
-    private func commit() {
-        container.accounts.rename(cardID: providerID, to: draft)
+        return ReorderLift.make(
+            id: metricID,
+            payload: .customizeMetric(title: title),
+            value: value,
+            frames: frameStore.frames
+        )
     }
 }
 

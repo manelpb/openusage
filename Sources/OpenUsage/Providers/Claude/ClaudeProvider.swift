@@ -3,9 +3,6 @@ import Foundation
 
 @MainActor
 final class ClaudeProvider: ProviderRuntime {
-    /// The default card's identity. Extra account cards inject their own `Provider` with an
-    /// `@`-suffixed id and an account-derived display name; everything else about the runtime is
-    /// identical.
     static func makeProvider(id: String = "claude", displayName: String = "Claude") -> Provider {
         Provider(
             id: id,
@@ -19,10 +16,10 @@ final class ClaudeProvider: ProviderRuntime {
     }
 
     let provider: Provider
-
     let authStore: ClaudeAuthStore
     let usageClient: ClaudeUsageClient
     let logUsageScanner: ClaudeLogUsageScanner
+    let allowsUnattributedPiUsage: Bool
     let now: @Sendable () -> Date
     let pricing: @Sendable () async -> ModelPricing
 
@@ -32,6 +29,7 @@ final class ClaudeProvider: ProviderRuntime {
     /// entirely until the cooldown expires so we don't keep hammering an endpoint that's already limiting
     /// us. Mirrors the legacy plugin's `cachedUsageData` + `rateLimitedUntilMs`.
     private var cachedCredentialFingerprint: Data?
+    private var verifiedCredentialFingerprint: Data?
     private var lastGoodUsage: ClaudeMappedUsage?
     private var rateLimitedUntil: Date?
     private static let rateLimitCooldown: TimeInterval = 5 * 60
@@ -41,6 +39,7 @@ final class ClaudeProvider: ProviderRuntime {
         authStore: ClaudeAuthStore = ClaudeAuthStore(),
         usageClient: ClaudeUsageClient = ClaudeUsageClient(),
         logUsageScanner: ClaudeLogUsageScanner = ClaudeLogUsageScanner(),
+        allowsUnattributedPiUsage: Bool = true,
         now: @escaping @Sendable () -> Date = Date.init,
         pricing: @escaping @Sendable () async -> ModelPricing = { await ModelPricingStore.shared.current() }
     ) {
@@ -48,20 +47,21 @@ final class ClaudeProvider: ProviderRuntime {
         self.authStore = authStore
         self.usageClient = usageClient
         self.logUsageScanner = logUsageScanner
+        self.allowsUnattributedPiUsage = allowsUnattributedPiUsage
         self.now = now
         self.pricing = pricing
     }
 
     var widgetDescriptors: [WidgetDescriptor] {
         [
-            .percent(id: "\(provider.id).session", provider: provider, title: "Session", isSessionWindow: true)
+            .percent(id: "\(provider.id).session", provider: provider, title: "Session", sessionStartSignal: .missingResetDate)
                 .exportingLimit("session", unit: "percent"),
             .percent(id: "\(provider.id).weekly", provider: provider, title: "Weekly")
                 .exportingLimit("weekly", unit: "percent"),
-            .percent(id: "\(provider.id).sonnet", provider: provider, title: "Sonnet")
-                .exportingLimit("sonnet", unit: "percent"),
             .percent(id: "\(provider.id).fable", provider: provider, title: "Fable")
                 .exportingLimit("fable", unit: "percent"),
+            .percent(id: "\(provider.id).sonnet", provider: provider, title: "Sonnet")
+                .exportingLimit("sonnet", unit: "percent"),
             .boundedDollars(id: "\(provider.id).extra", provider: provider, title: "Extra Usage", metricLabel: "Extra usage spent", limit: 100, valueWord: "spent")
                 .exportingLimit("extraUsage", unit: "usd", source: .progressOrValue(kind: .dollars)),
             .usageTrend(provider: provider)
@@ -74,12 +74,6 @@ final class ClaudeProvider: ProviderRuntime {
     }
 
     func hasLocalCredentials() async -> Bool {
-        // Scoped cards answer from footprints only (file existence / keychain attributes) so the
-        // every-launch seeding probe can never raise a keychain dialog for an account the user
-        // hasn't granted yet. The secret read happens on the first refresh.
-        if authStore.scope != .standard {
-            return await loadOffMainActor { [authStore] in authStore.hasCredentialFootprint() }
-        }
         // Never trigger another app's Keychain prompt during first-run detection. Encrypted Desktop
         // material still counts as a local login; the first manual refresh requests access if needed.
         let load = await loadOffMainActor { [authStore] in authStore.loadCredentialSet() }
@@ -154,7 +148,19 @@ final class ClaudeProvider: ProviderRuntime {
                 break
             }
             AppLog.info(LogTag.auth("claude"), "no access token, not logged in")
-            return ProviderSnapshot.error(provider: provider, error: ClaudeAuthError.notLoggedIn)
+            let error = ClaudeAuthError.notLoggedIn
+            let snapshot = await snapshotWithLocalUsage(
+                mapped: ClaudeMappedUsage(plan: nil, lines: []),
+                warning: error.localizedDescription
+            )
+            guard let history = snapshot.usageHistory,
+                  history.series.daily.contains(where: {
+                      $0.totalTokens > 0 || ($0.costUSD ?? 0) > 0
+                  })
+            else {
+                return ProviderSnapshot.error(provider: provider, error: error)
+            }
+            return snapshot
         }
 
         // Per-source diagnostics at info level (token-free: source kind + refresh-token-present + expired
@@ -264,12 +270,22 @@ final class ClaudeProvider: ProviderRuntime {
             warning = fallbackWarning
         }
 
+        return await snapshotWithLocalUsage(mapped: mapped, warning: warning)
+    }
+
+    private func snapshotWithLocalUsage(
+        mapped initialUsage: ClaudeMappedUsage,
+        warning: String?
+    ) async -> ProviderSnapshot {
+        var mapped = initialUsage
         // Local spend tiles, scanned natively from Claude Code's session logs and priced through the
         // shared pricing store, merged with Claude usage that happened inside pi (attributed back here).
-        // Both scans run on their scanner actors, off the main actor.
+        // Both scans run on their scanner actors, off the main actor, and do not require an OAuth login.
         let pricing = await pricing()
         let nativeScan = await logUsageScanner.scan(now: now(), pricing: pricing)
-        let piScan = await PiUsageScanner.shared.scan(cardID: provider.id, now: now(), pricing: pricing)
+        let piScan = allowsUnattributedPiUsage
+            ? await PiUsageScanner.shared.scan(cardID: provider.id, now: now(), pricing: pricing)
+            : nil
         var usageHistory: ProviderUsageHistory?
         // Cancellation can land between the native and pi scans. Treat the pair as one unit so a
         // partial result cannot replace the last-good combined history in WidgetDataStore.
@@ -331,9 +347,20 @@ final class ClaudeProvider: ProviderRuntime {
 
         var working = state
         defer { state = working }
+        var verificationResponse = try await verifyAccountIfNeeded(
+            accessToken: working.oauth.accessToken ?? ""
+        )
         let response = try await ProviderAuthRetry.fetch(
             token: working.oauth.accessToken ?? "",
-            attempt: { try await self.usageClient.fetchUsage(accessToken: $0, config: self.authStore.oauthConfig()) },
+            attempt: { accessToken in
+                if let response = verificationResponse {
+                    verificationResponse = nil
+                    return response
+                }
+                return try await self.usageClient.fetchUsage(
+                    accessToken: accessToken, config: self.authStore.oauthConfig()
+                )
+            },
             refreshAccessToken: {
                 if working.source == .desktop {
                     throw ClaudeAuthError.desktopTokenExpired
@@ -349,6 +376,9 @@ final class ClaudeProvider: ProviderRuntime {
                 if refreshed.persisted {
                     expectedGeneration = expectedGeneration.replacing(working)
                 }
+                verificationResponse = try await self.verifyAccountIfNeeded(
+                    accessToken: refreshed.accessToken
+                )
                 return refreshed.accessToken
             },
             connectionFailed: ClaudeUsageError.connectionFailed,
@@ -374,6 +404,21 @@ final class ClaudeProvider: ProviderRuntime {
         lastGoodUsage = mapped
         rateLimitedUntil = nil
         return mapped
+    }
+
+    private func verifyAccountIfNeeded(accessToken: String) async throws -> HTTPResponse? {
+        guard let identity = authStore.expectedIdentityKey,
+              identity.split(separator: "|").count == 2
+        else { return nil }
+        let fingerprint = Data(SHA256.hash(data: Data("\(identity)\u{0}\(accessToken)".utf8)))
+        guard verifiedCredentialFingerprint != fingerprint else { return nil }
+        if let response = try await usageClient.verifyAccount(
+            accessToken: accessToken, expectedIdentityKey: identity, config: authStore.oauthConfig()
+        ) {
+            return response
+        }
+        verifiedCredentialFingerprint = fingerprint
+        return nil
     }
 
     /// Last-good usage with an appended staleness note when we have it; otherwise the plain rate-limited

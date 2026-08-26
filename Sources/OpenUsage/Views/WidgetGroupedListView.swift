@@ -18,12 +18,9 @@ struct WidgetGroupedListView: View {
     @Binding var reorderLift: ReorderLift?
     var onSignIn: ((String) -> Void)?
 
-    @State private var rowFrames: [String: CGRect] = [:]
+    @State private var frameStore = ReorderFrameStore()
     @State private var activeProviderID: String?
     @State private var activeMetricID: String?
-    /// The card the "Rename…" alert is currently editing; `nil` when the alert is closed.
-    @State private var renameCardID: String?
-    @State private var renameDraft = ""
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
 
     var body: some View {
@@ -35,27 +32,8 @@ struct WidgetGroupedListView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onPreferenceChange(ReorderFramePreferenceKey.self) { rowFrames = $0 }
+        .onPreferenceChange(ReorderFramePreferenceKey.self) { frameStore.frames = $0 }
         .animation(Motion.spring, value: layout.displayGroups.map(\.provider.id))
-        .alert("Rename Card", isPresented: isRenamePresented) {
-            TextField("Name", text: $renameDraft)
-            Button("Rename") {
-                if let renameCardID {
-                    // A cleared field resets the card back to its derived name.
-                    container.accounts.rename(cardID: renameCardID, to: renameDraft)
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Leave the name empty to go back to the default.")
-        }
-    }
-
-    private var isRenamePresented: Binding<Bool> {
-        Binding(
-            get: { renameCardID != nil },
-            set: { if !$0 { renameCardID = nil } }
-        )
     }
 
     private func section(_ group: ProviderGroup) -> some View {
@@ -83,27 +61,14 @@ struct WidgetGroupedListView: View {
         .padding(.horizontal, 8)
         .highPriorityGesture(providerDragGesture(for: group))
         .contextMenu {
-            let name = container.displayName(for: group.provider)
             // Hides the whole provider section (the Customize provider list brings it back). Mirrors
             // the per-metric "Hide" but one level up, so the verb order reads the same on a header as a row.
-            Button("Hide \(name)") {
+            Button("Hide \(group.provider.displayName)") {
                 container.enablement.setEnabled(false, for: group.provider.id)
             }
             Divider()
-            Button("Refresh \(name)") {
+            Button("Refresh \(group.provider.displayName)") {
                 Task { await dataStore.refresh(providerID: group.provider.id, force: true) }
-            }
-            // Renaming needs an account record to write to, so it only shows on account-model cards
-            // whose identity has been observed at least once.
-            if container.canRename(group.provider.id) {
-                Button("Rename…") {
-                    // Seed with the STORED rename (empty when none), not the derived title —
-                    // confirming an untouched field must stay "no rename", not freeze the derived
-                    // name into a custom label that future account-label updates can't refresh.
-                    renameDraft = container.accounts.records
-                        .first { $0.id == group.provider.id }?.customLabel ?? ""
-                    renameCardID = group.provider.id
-                }
             }
             Button("Customize…") {
                 openCustomize(for: group.provider.id)
@@ -124,8 +89,7 @@ struct WidgetGroupedListView: View {
             group: group,
             dataStore: dataStore,
             layout: layout,
-            appearance: colorScheme,
-            displayName: container.displayName(for: group.provider)
+            appearance: colorScheme
         )
     }
 
@@ -240,7 +204,10 @@ struct WidgetGroupedListView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .reorderFrame(id: expandedDividerID(for: providerID), in: .named(reorderSpaceName))
+        .reorderFrame(
+            id: expandedDividerID(for: providerID),
+            in: .named(reorderSpaceName)
+        )
         .accessibilityLabel(isExpanded ? "Show less" : "Show more")
     }
 
@@ -264,7 +231,6 @@ struct WidgetGroupedListView: View {
 
     private func row(_ descriptor: WidgetDescriptor, data: WidgetData, in providerID: String,
                      condensedTop: Bool) -> some View {
-        let isActive = activeMetricID == descriptor.id
         return WidgetRowView(
             data: data,
             onToggleResetDisplay: { dataStore.resetDisplayMode.toggle() },
@@ -272,7 +238,7 @@ struct WidgetGroupedListView: View {
             condensedTop: condensedTop
         )
             .contentShape(Rectangle())
-            .opacity(isActive ? 0 : 1)
+            .opacity(activeMetricID == descriptor.id ? 0 : 1)
             .highPriorityGesture(metricDragGesture(for: descriptor, providerID: providerID))
             .contextMenu { rowMenu(descriptor, providerID: providerID) }
             .reorderFrame(id: descriptor.id, in: .named(reorderSpaceName))
@@ -299,7 +265,7 @@ struct WidgetGroupedListView: View {
         }
         Divider()
         if let provider = layout.provider(id: providerID) {
-            Button("Refresh \(container.displayName(for: provider))") {
+            Button("Refresh \(provider.displayName)") {
                 Task { await dataStore.refresh(providerID: providerID, force: true) }
             }
         }
@@ -320,7 +286,7 @@ struct WidgetGroupedListView: View {
         reorderDragGesture(
             id: group.provider.id,
             coordinateSpaceName: reorderSpaceName,
-            rowFrames: rowFrames,
+            frameStore: frameStore,
             active: $activeProviderID,
             lift: $reorderLift,
             makeLift: { makeProviderLift(for: group, value: $0) },
@@ -333,7 +299,7 @@ struct WidgetGroupedListView: View {
         reorderDragGesture(
             id: descriptor.id,
             coordinateSpaceName: reorderSpaceName,
-            rowFrames: rowFrames,
+            frameStore: frameStore,
             active: $activeMetricID,
             lift: $reorderLift,
             makeLift: { makeMetricLift(for: descriptor, value: $0) },
@@ -386,7 +352,7 @@ struct WidgetGroupedListView: View {
                 rows: rows
             ),
             value: value,
-            frames: rowFrames
+            frames: frameStore.frames
         )
     }
 
@@ -395,7 +361,7 @@ struct WidgetGroupedListView: View {
             id: descriptor.id,
             payload: .dashboardMetric(data: dataStore.data(for: descriptor)),
             value: value,
-            frames: rowFrames
+            frames: frameStore.frames
         )
     }
 }

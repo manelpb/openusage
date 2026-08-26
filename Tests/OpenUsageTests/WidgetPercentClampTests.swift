@@ -7,26 +7,32 @@ import XCTest
 /// construction choke point (`WidgetDataStore.resolve`), with a defensive clamp in `MetricFormatter`.
 @MainActor
 final class WidgetPercentClampTests: XCTestCase {
-    func testNegativePercentSampleNeverRendersNegative() async {
-        let (store, descriptor) = await makePercentStore(used: -5, suite: "negative")
+    func testOutOfRangePercentSamplesClampAcrossEveryRenderingPath() async {
+        for (suite, raw, clamped) in [("negative", -5.0, 0.0), ("over", 130.0, 100.0)] {
+            let (store, descriptor) = await makePercentStore(used: raw, suite: suite)
+            let usedText = "\(Int(clamped))%"
+            let remainingText = "\(100 - Int(clamped))%"
 
-        // Default (remaining) mode: clamped used = 0 reads as a clean "0% used" / "100% left" meter.
-        store.meterStyle = .remaining
-        let remaining = store.data(for: descriptor)
-        XCTAssertEqual(remaining.used, 0) // sanitized at construction
-        XCTAssertEqual(remaining.valueText, "100%")
-        XCTAssertEqual(remaining.boundedHeadline, "100% left")
-        XCTAssertEqual(remaining.menuBarValue, "100%")
-        // The flip tooltip was the path that leaked "-5% used" even in the default mode.
-        XCTAssertEqual(remaining.meterStyleTooltip, "0% used")
+            for (mode, value, word, opposite) in [
+                (WidgetDisplayMode.remaining, remainingText, "left", "\(usedText) used"),
+                (.used, usedText, "used", "\(remainingText) left")
+            ] {
+                store.meterStyle = mode
+                let data = store.data(for: descriptor)
+                XCTAssertEqual(data.used, clamped, suite)
+                XCTAssertEqual(data.valueText, value, suite)
+                XCTAssertEqual(data.boundedHeadline, "\(value) \(word)", suite)
+                // The fork's menu-bar severity flag appends "!" to warning/critical meters. Mirror the
+                // renderer's source of truth (`meterState().severity`) so clamping is still asserted.
+                let menuBarMarker = data.meterState().severity.map { $0 == .normal ? "" : "!" } ?? ""
+                XCTAssertEqual(data.menuBarValue, value + menuBarMarker, suite)
+                XCTAssertEqual(data.meterStyleTooltip, opposite, suite)
+            }
 
-        // Used mode: the headline itself was the visible "-5% used" bug.
-        store.meterStyle = .used
-        let used = store.data(for: descriptor)
-        XCTAssertEqual(used.valueText, "0%")
-        XCTAssertEqual(used.boundedHeadline, "0% used")
-        XCTAssertEqual(used.menuBarValue, "0%")
-        XCTAssertEqual(used.meterStyleTooltip, "100% left")
+            if clamped == 100 {
+                XCTAssertEqual(store.data(for: descriptor).meterState(), .spent)
+            }
+        }
     }
 
     func testOverHundredPercentSampleNeverRendersOverHundred() async {
@@ -37,9 +43,9 @@ final class WidgetPercentClampTests: XCTestCase {
         XCTAssertEqual(used.used, 100) // sanitized at construction
         XCTAssertEqual(used.valueText, "100%")
         XCTAssertEqual(used.boundedHeadline, "100% used")
-        // A spent meter flags the menu bar with a "!" (critical severity), even though the number clamps.
+        // A spent percent flags the menu bar with a "!" (critical severity), even though the number clamps.
         XCTAssertEqual(used.menuBarValue, "100%!")
-        // Overage still reads as spent — it's conveyed by the meter state, not an out-of-range number.
+        // Overage still reads as spent — conveyed by the meter state, not an out-of-range number.
         XCTAssertEqual(used.meterState(), .spent)
 
         store.meterStyle = .remaining

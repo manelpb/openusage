@@ -38,10 +38,6 @@ final class WidgetDataStore {
     /// producer, and launch loads only paint an entry whose stamp matches. A card absent here has an
     /// unresolved identity this launch (or isn't account-aware) — its cache behaves as it always did.
     private let providerIdentityKeys: [String: String]
-    /// The live card title for a card id, `nil` for non-account providers — the account-registry
-    /// name resolver, injected by `AppContainer` so notification titles carry renames. `nil`
-    /// (tests, the one-shot CLI) falls back to the baked derived name.
-    private let resolveDisplayName: (@MainActor (String) -> String?)?
     /// Where a fired milestone is delivered: `(idPrefix, title, subtitle, body) -> Bool`. The Bool is
     /// whether it was actually delivered (authorized + scheduled); on false the caller leaves the
     /// milestone un-marked so it retries next pass. Injected so tests can record posts without a live
@@ -105,9 +101,6 @@ final class WidgetDataStore {
     /// Wired by `ICloudUsageSyncStore`; debounced there so a concurrent provider batch produces one file.
     @ObservationIgnored var onLocalHistoryChanged: (@MainActor () -> Void)?
     @ObservationIgnored private var peerHistoryDocuments: [UsageHistoryDocument] = []
-    /// Accounts synced from other Macs that have NO card here: surfaced in Total Spend only (their
-    /// synthesized snapshots carry the usual Today/Yesterday/Last 30 Days lines), never as cards.
-    private(set) var remoteOnlySpend: [(provider: Provider, snapshot: ProviderSnapshot)] = []
 
     /// Global meter style: whether every bounded tile (and the menu-bar value) renders as "used" or
     /// "left/remaining". Persisted so the choice survives relaunch; defaults to `.remaining`.
@@ -128,6 +121,15 @@ final class WidgetDataStore {
         didSet { defaults.set(alwaysShowPacing, forKey: Self.alwaysShowPacingKey) }
     }
 
+    /// Restores the Usage Display preferences (meter style, reset-time format, always-show-pacing) to
+    /// their defaults — the Settings "Reset All Settings" path. Cached usage snapshots are data, not
+    /// settings, and stay untouched.
+    func resetDisplaySettings() {
+        meterStyle = .remaining
+        resetDisplayMode = .relative
+        alwaysShowPacing = false
+    }
+
     init(
         registry: WidgetRegistry,
         providers: [ProviderRuntime],
@@ -141,8 +143,7 @@ final class WidgetDataStore {
         providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
         notificationSettings: (@MainActor () -> NotificationSettingsStore)? = nil,
         postNotification: (@MainActor (String, String, String, String) async -> Bool)? = nil,
-        providerIdentityKeys: [String: String] = [:],
-        resolveDisplayName: (@MainActor (String) -> String?)? = nil
+        providerIdentityKeys: [String: String] = [:]
     ) {
         precondition(slowProviderRefreshThreshold >= 0)
         precondition(providerRefreshTimeout > 0)
@@ -162,7 +163,6 @@ final class WidgetDataStore {
                 await AppNotifications.shared.post(idPrefix: idPrefix, title: title, subtitle: subtitle, body: body)
             }
         self.providerIdentityKeys = providerIdentityKeys
-        self.resolveDisplayName = resolveDisplayName
         self.meterStyle = defaults.enumValue(forKey: Self.meterStyleKey, default: .remaining)
         self.resetDisplayMode = defaults.enumValue(forKey: Self.resetDisplayModeKey, default: .relative)
         self.alwaysShowPacing = defaults.bool(forKey: Self.alwaysShowPacingKey)
@@ -256,9 +256,7 @@ final class WidgetDataStore {
             metrics: metrics,
             toggles: toggles,
             now: now,
-            providerName: { [providersByID, resolveDisplayName] id in
-                resolveDisplayName?(id) ?? providersByID[id]?.provider.displayName ?? id
-            },
+            providerName: { [providersByID] id in providersByID[id]?.provider.displayName ?? id },
             post: postNotification
         )
     }
@@ -429,20 +427,37 @@ final class WidgetDataStore {
     func localHistoryDocument(deviceID: String, deviceName: String, updatedAt: Date = Date()) -> UsageHistoryDocument {
         var providers: [String: ProviderUsageHistory] = [:]
         var identities: [String: String] = [:]
-        // Every machine-local card syncs — account cards included. Their ids are identity-derived,
-        // so they mean the same account on every Mac; the identities map additionally lets peers
-        // match a default card's history to whatever card that account is over there (see
-        // `PeerHistoryRemapper`).
+        let hasMultipleClaudeCards = registry.providers.count {
+            ProviderAccountID.family(of: $0.id) == "claude"
+        } > 1
         for (providerID, descriptor) in registry.historyDescriptorsByProvider
         where descriptor.scope == .machineLocal && isProviderEnabled(providerID) {
             if let history = localSnapshots[providerID]?.usageHistory {
-                providers[providerID] = history
-                if let identity = providerIdentityKeys[providerID] {
-                    identities[providerID] = identity
+                if ProviderAccountID.family(of: providerID) == "claude" {
+                    if let identity = providerIdentityKeys[providerID] {
+                        identities[providerID] = identity.lowercased()
+                    } else if hasMultipleClaudeCards || providerID != "claude" {
+                        AppLog.warn(.config, "sync: omitting Claude history without account ownership")
+                        continue
+                    }
                 }
+                providers[providerID] = history
             }
         }
+        let exportedClaudeIDs = providers.keys.filter {
+            ProviderAccountID.family(of: $0) == "claude"
+        }
+        if let onlyClaudeID = exportedClaudeIDs.first,
+           exportedClaudeIDs.count == 1, onlyClaudeID != "claude"
+        {
+            providers["claude"] = providers.removeValue(forKey: onlyClaudeID)
+            identities["claude"] = identities.removeValue(forKey: onlyClaudeID)
+        }
+        let hasClaudeAccountCards = providers.keys.contains {
+            ProviderAccountID.family(of: $0) == "claude" && $0 != "claude"
+        }
         return UsageHistoryDocument(
+            schema: hasClaudeAccountCards ? UsageHistoryDocument.accountSchema : UsageHistoryDocument.currentSchema,
             deviceID: deviceID,
             deviceName: deviceName,
             updatedAt: updatedAt,
@@ -454,7 +469,6 @@ final class WidgetDataStore {
     private func rebuildRenderedSnapshots() {
         guard !peerHistoryDocuments.isEmpty else {
             snapshots = localSnapshots
-            remoteOnlySpend = []
             return
         }
         let renderDate = now()
@@ -463,22 +477,11 @@ final class WidgetDataStore {
         ) { result, entry in
             if isProviderEnabled(entry.key) { result[entry.key] = entry.value }
         }
-        // Match peers by account identity, not card id — the same account can be the default card
-        // on one Mac and an extra account card on another. Whatever matches no local card at all
-        // becomes a Total Spend-only remote entry below.
-        let remapped = PeerHistoryRemapper.remap(
-            documents: peerHistoryDocuments,
-            localIdentityByCardID: providerIdentityKeys
-        )
         let merged = UsageHistoryAggregator.merged(
             localSnapshots: localSnapshots,
-            peerHistories: remapped.histories,
+            peerDocuments: peerHistoryDocuments,
             descriptors: enabledDescriptors,
-            now: renderDate
-        )
-        remoteOnlySpend = Self.renderRemoteOnlySpend(
-            remapped.remoteOnly,
-            registry: registry,
+            providerIdentityKeys: providerIdentityKeys,
             now: renderDate
         )
         var rendered = localSnapshots
@@ -500,48 +503,6 @@ final class WidgetDataStore {
             )
         }
         snapshots = rendered
-    }
-
-    /// Synthesize Total Spend entries for accounts that exist only on other Macs: a pseudo provider
-    /// (family icon, "Claude · Mac mini" name) plus a snapshot carrying the standard spend-tile
-    /// lines, rendered from the merged remote history by the same renderer real cards use.
-    private static func renderRemoteOnlySpend(
-        _ remoteOnly: [PeerHistoryRemapper.RemoteOnlyHistory],
-        registry: WidgetRegistry,
-        now: Date
-    ) -> [(provider: Provider, snapshot: ProviderSnapshot)] {
-        remoteOnly.compactMap { entry in
-            guard let familyProvider = registry.provider(id: entry.family),
-                  let descriptor = registry.historyDescriptorsByProvider[entry.family]
-            else { return nil }
-            let history = UsageHistoryAggregator.mergeHistories(entry.histories, now: now)
-            guard !history.series.daily.isEmpty else { return nil }
-
-            // The slice is named by the account's identity-derived card id ("claude@ab12cd34") —
-            // unique per account, and the exact id the account's card gets the day it's signed in
-            // here (and the id the CLI/API answer to on the Mac that has it). Which Mac the spend
-            // came from is irrelevant to the total, so it's not part of the name. The pseudo
-            // provider id stays distinct from real card ids so a slice can never collide with a
-            // live card.
-            let provider = Provider(
-                id: "\(entry.family)@peer-\(ProviderAccountID.hash8(entry.identityKey))",
-                displayName: entry.cardID,
-                icon: familyProvider.icon
-            )
-            let empty = ProviderSnapshot(
-                providerID: provider.id,
-                displayName: provider.displayName,
-                lines: [],
-                refreshedAt: now
-            )
-            let snapshot = UsageHistorySnapshotRenderer.render(
-                local: empty,
-                history: history,
-                descriptor: descriptor,
-                now: now
-            )
-            return (provider, snapshot)
-        }
     }
 
     /// The provider's latest refresh error, or `nil` when its last refresh succeeded.
@@ -653,8 +614,8 @@ final class WidgetDataStore {
                 infoNote: descriptor.sample.infoNote
             )
             // Descriptor opt-in (session-window meters read "Not started" when unused); the fresh
-            // `.progress` result doesn't start from the sample, so carry the flag explicitly.
-            result.isSessionWindow = descriptor.sample.isSessionWindow
+            // `.progress` result doesn't start from the sample, so carry the signal explicitly.
+            result.sessionStartSignal = descriptor.sample.sessionStartSignal
             return result
         case .text:
             // Text lines carry provider notices for the local API; no dashboard descriptor consumes

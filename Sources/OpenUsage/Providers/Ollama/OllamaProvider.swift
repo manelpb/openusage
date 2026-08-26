@@ -7,8 +7,8 @@ final class OllamaProvider: ProviderRuntime {
         displayName: "Ollama",
         icon: .providerMark("ollama"),
         links: [
-            ProviderLink(label: "Settings", url: "https://ollama.com/settings"),
-            ProviderLink(label: "Keys", url: "https://ollama.com/settings/keys")
+            ProviderLink(label: "Dashboard", url: "https://ollama.com/settings"),
+            ProviderLink(label: "API Keys", url: "https://ollama.com/settings/keys")
         ],
         supportsInAppSignIn: true
     )
@@ -40,7 +40,7 @@ final class OllamaProvider: ProviderRuntime {
 
     var widgetDescriptors: [WidgetDescriptor] {
         [
-            .percent(id: "ollama.session", provider: provider, title: "Session", isSessionWindow: true)
+            .percent(id: "ollama.session", provider: provider, title: "Session", sessionStartSignal: .zeroUsage)
                 .exportingLimit("session", unit: "percent"),
             .percent(id: "ollama.weekly", provider: provider, title: "Weekly")
                 .exportingLimit("weekly", unit: "percent")

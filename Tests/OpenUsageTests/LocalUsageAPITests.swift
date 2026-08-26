@@ -89,13 +89,11 @@ final class LocalUsageAPITests: XCTestCase {
         XCTAssertEqual(pending.status, 200)
         XCTAssertEqual(try XCTUnwrap(try json(pending.body) as? [Any]).count, 0)
 
-        // A token naming no known card and no family → 404 provider_not_found.
+        // A token naming no known card and no family → 404 provider_not_found. (The limits route's
+        // unknown-token 404 is covered in LocalLimitsAPITests.)
         let unknown = LocalUsageAPI.respond(method: "GET", path: "/v1/usage/nope", state: state)
         XCTAssertEqual(unknown.status, 404)
         XCTAssertEqual((try json(unknown.body) as? [String: Any])?["error"] as? String, "provider_not_found")
-
-        let unknownLimits = LocalUsageAPI.respond(method: "GET", path: "/v1/limits/nope", state: state)
-        XCTAssertEqual(unknownLimits.status, 404)
     }
 
     func testFamilyTokenMatchesEveryCardOfTheFamily() throws {
@@ -127,21 +125,6 @@ final class LocalUsageAPITests: XCTestCase {
         let envelope = try XCTUnwrap(try json(limits.body) as? [String: Any])
         let providers = try XCTUnwrap(envelope["providers"] as? [String: Any])
         XCTAssertEqual(Set(providers.keys), ["claude", "claude@ab12cd34"])
-    }
-
-    func testResolvedTitlesOverrideSnapshotDisplayNamesAtTheBoundary() throws {
-        // Snapshots always store the derived name; the boundary re-resolves against the account
-        // registry so API/CLI output carries renames without ever persisting them.
-        let state = makeState().resolvingDisplayNames(["claude": "Claude Team"])
-
-        let response = LocalUsageAPI.respond(method: "GET", path: "/v1/usage", state: state)
-        let array = try XCTUnwrap(try json(response.body) as? [[String: Any]])
-        XCTAssertEqual(array.first { $0["providerId"] as? String == "claude" }?["displayName"] as? String, "Claude Team")
-        XCTAssertEqual(
-            array.first { $0["providerId"] as? String == "cursor" }?["displayName"] as? String,
-            "Cursor",
-            "cards without a record keep their baked name"
-        )
     }
 
     func testMethodAndRouteErrors() throws {
