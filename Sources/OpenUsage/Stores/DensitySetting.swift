@@ -57,6 +57,11 @@ enum DensitySetting: String, Hashable, Sendable, CaseIterable {
     /// the card instead of standing taller than its neighbors.
     var trendChartHeight: CGFloat { self == .compact ? 14 : 18 }
 
+    /// Run-out summary line graph height. Taller than the trend sparkline: a projection line's signal
+    /// is its slope relative to the even-pace reference, which needs vertical room to read (the trend's
+    /// bar height would squash it to a near-flat line).
+    var projectionChartHeight: CGFloat { self == .compact ? 36 : 40 }
+
     /// Vertical padding on a text-only row.
     var textRowPadding: CGFloat { self == .compact ? 4 : 6 }
 

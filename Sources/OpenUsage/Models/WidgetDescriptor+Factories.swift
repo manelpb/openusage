@@ -159,6 +159,19 @@ extension WidgetDescriptor {
                     sample: sample, pinnable: false)
     }
 
+    /// The per-provider run-out summary row: an inline line graph of the most at-risk bounded meter's
+    /// projection. Derived (not provider-emitted), so `WidgetDataStore` builds its data from the
+    /// provider's other bounded meters. On by default; toggleable/reorderable like any metric. Not
+    /// pinnable — the tray can't draw a chart.
+    static func projectionSummary(provider: Provider) -> WidgetDescriptor {
+        var sample = WidgetData(title: "Run-out", icon: provider.icon, kind: .percent, used: 0, limit: nil)
+        sample.isProjection = true
+        var descriptor = make(id: "\(provider.id).projection", provider: provider,
+                              metricLabel: "Projection", sample: sample, pinnable: false)
+        descriptor.isProjectionSummary = true
+        return descriptor
+    }
+
     private static func make(
         id: String,
         provider: Provider,

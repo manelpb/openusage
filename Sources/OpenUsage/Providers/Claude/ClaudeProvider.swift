@@ -69,7 +69,8 @@ final class ClaudeProvider: ProviderRuntime {
                     scope: .machineLocal,
                     estimatedCost: true,
                     sourceNote: "From your Claude usage history (estimated)"
-                )
+                ),
+            .projectionSummary(provider: provider)
         ] + WidgetDescriptor.spendTiles(provider: provider)
     }
 

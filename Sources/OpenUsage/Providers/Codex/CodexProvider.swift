@@ -55,7 +55,8 @@ final class CodexProvider: ProviderRuntime {
                     scope: .machineLocal,
                     estimatedCost: true,
                     sourceNote: "From your Codex logs (estimated)"
-                )
+                ),
+            .projectionSummary(provider: provider)
         ] + WidgetDescriptor.spendTiles(provider: provider)
     }
 

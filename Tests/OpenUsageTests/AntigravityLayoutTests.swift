@@ -12,7 +12,7 @@ final class AntigravityLayoutTests: XCTestCase {
         // Every quota, trend, and spend metric is enabled in provider declaration order.
         XCTAssertEqual(store.placed.map(\.descriptorID), [
             "antigravity.geminiPro", "antigravity.geminiWeekly",
-            "antigravity.claude", "antigravity.claudeWeekly", "antigravity.trend",
+            "antigravity.claude", "antigravity.claudeWeekly", "antigravity.trend", "antigravity.projection",
             "antigravity.today", "antigravity.yesterday", "antigravity.last30"
         ])
 
@@ -22,7 +22,7 @@ final class AntigravityLayoutTests: XCTestCase {
         // Gemini pair and trend above the fold; the Claude pool and spend rows below the caret.
         let group = store.customizeGroups.first { $0.provider.id == "antigravity" }
         XCTAssertEqual(group?.alwaysShownMetrics.map(\.id), [
-            "antigravity.geminiPro", "antigravity.geminiWeekly", "antigravity.trend"
+            "antigravity.geminiPro", "antigravity.geminiWeekly", "antigravity.trend", "antigravity.projection"
         ])
         XCTAssertEqual(group?.expandedMetrics.map(\.id), [
             "antigravity.claude", "antigravity.claudeWeekly",

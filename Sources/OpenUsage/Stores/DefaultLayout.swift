@@ -8,15 +8,15 @@ import Foundation
 enum DefaultLayout {
     static let metricIDs: [String] = [
         "antigravity.geminiPro", "antigravity.geminiWeekly", "antigravity.claude", "antigravity.claudeWeekly",
-        "antigravity.trend", "antigravity.today", "antigravity.yesterday", "antigravity.last30",
+        "antigravity.trend", "antigravity.projection", "antigravity.today", "antigravity.yesterday", "antigravity.last30",
 
-        "claude.session", "claude.weekly", "claude.fable", "claude.trend",
+        "claude.session", "claude.weekly", "claude.fable", "claude.trend", "claude.projection",
         "claude.extra", "claude.today", "claude.yesterday", "claude.last30",
 
-        "codex.session", "codex.weekly", "codex.spark", "codex.sparkWeekly", "codex.trend",
+        "codex.session", "codex.weekly", "codex.spark", "codex.sparkWeekly", "codex.trend", "codex.projection",
         "codex.credits", "codex.rateLimitResets", "codex.today", "codex.yesterday", "codex.last30",
 
-        "cursor.usage", "cursor.auto", "cursor.api", "cursor.grokBot", "cursor.trend",
+        "cursor.usage", "cursor.auto", "cursor.api", "cursor.grokBot", "cursor.trend", "cursor.projection",
         "cursor.onDemand", "cursor.today", "cursor.yesterday", "cursor.last30",
 
         "copilot.premium", "copilot.extra", "copilot.orgCredits", "copilot.orgSpend",
@@ -27,7 +27,7 @@ enum DefaultLayout {
         "grok.weekly", "grok.trend",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
 
-        "opencode.session", "opencode.weekly", "opencode.monthly", "opencode.trend",
+        "opencode.session", "opencode.weekly", "opencode.monthly", "opencode.trend", "opencode.projection",
         "opencode.today", "opencode.yesterday", "opencode.last30",
 
         "openrouter.credits", "openrouter.balance",

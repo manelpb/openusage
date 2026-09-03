@@ -5,7 +5,7 @@ import SwiftUI
 /// - **Bounded** (`limit != nil`, meter row): a label line (right-aligned flame + run-out time when
 ///   projected to run out before reset, or "~3% spare" when cutting it close), then a full-width
 ///   capsule meter (color = pace verdict; in the amber state a tick splits the projected spare
-///   cushion off the bar; hovering shows the verdict), then a primary text row ("50% left" ⟷ "Resets in 4d 17h").
+///   cushion off the bar; hovering shows the projection popover), then a primary text row ("50% left" ⟷ "Resets in 4d 17h").
 ///   Mirrors the original OpenUsage card.
 /// - **Unbounded** (`limit == nil`, text-only row): **no bar**. Label on the left, a single right-aligned
 ///   descriptive line ("1,503 left") and an optional secondary line ("on-device estimate").
@@ -27,6 +27,8 @@ struct WidgetRowView: View {
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
     @Environment(\.reduceAnimations) private var reduceAnimations
     @State private var modelHover = HoverPopoverState()
+    /// Drives the pace projection popover on the meter bar (bounded rows with a reset window).
+    @State private var paceHover = HoverPopoverState()
     /// Backs the resets popover's claim flow; `nil` outside the live dashboard (previews, share
     /// renders), which renders the timeline read-only.
     @Environment(\.codexResetClaim) private var codexResetClaim
@@ -82,7 +84,9 @@ struct WidgetRowView: View {
 
     @ViewBuilder
     private var rowContent: some View {
-        if data.isChart, data.hasData {
+        if data.isProjection, data.hasData {
+            PaceProjectionInlineRow(data: data)
+        } else if data.isChart, data.hasData {
             // The sparkline owns its own label + bars; a chart with no real points falls through to the
             // unbounded "No data" row below (and so descriptor template data never leaks here).
             UsageSparkline(data: data)
@@ -99,11 +103,34 @@ struct WidgetRowView: View {
     /// neighboring rows.
     private var boundedRow: some View {
         let state = data.meterState()
-        return VStack(alignment: .leading, spacing: density.rowInnerSpacing) {
+        let row = VStack(alignment: .leading, spacing: density.rowInnerSpacing) {
             boundedLabelRow(state)
             meter(state)
             primaryTextRow
         }
+        .onDisappear { paceHover.dismiss() }
+
+        if let projection = data.paceProjection, state.tooltip != nil {
+            return AnyView(row
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    if case .active = phase { paceHover.inlineHover(true) } else { paceHover.inlineHover(false) }
+                }
+                .motionAwareHoverPopover(
+                    isPresented: Binding(get: { paceHover.isPresented }, set: { if !$0 { paceHover.dismiss() } }),
+                    reduceAnimations: reduceAnimations
+                ) {
+                    PaceProjectionDetail(
+                        title: data.title,
+                        projection: projection,
+                        readout: state.tooltip,
+                        severity: state.severity
+                    ) { inside in
+                        paceHover.detailHover(inside)
+                    }
+                })
+        }
+        return AnyView(row)
     }
 
     /// Label with the pace warning right-aligned on the same line — one slot, escalating with the
@@ -447,10 +474,12 @@ struct WidgetRowView: View {
     /// Empty + colorless without data. A thin tick marks the even-pace line — where usage would sit
     /// if it burned evenly across the reset window — on yellow and red bars always, and on blue when
     /// "always show pacing" is on. The tick rides in an overlay so it pokes out top and bottom without
-    /// changing the bar's height. Hovering shows the pace projection (`MeterState.tooltip`).
+    /// changing the bar's height. The `PaceProjectionDetail` popover for a row with a reset window
+    /// lives on the whole row (`boundedRow`); rows without a window keep the hover tooltip
+    /// (`MeterState.tooltip`).
     private func meter(_ state: WidgetData.MeterState) -> some View {
         let tick = data.paceTick(for: state)
-        return GeometryReader { proxy in
+        let bar = GeometryReader { proxy in
             // Track + fill define the bar's height; the tick rides in an `.overlay` so its taller frame
             // pokes out top and bottom without stretching the capsules. (As a ZStack sibling it grew the
             // stack and the flexible capsules stretched with it, so a tick'd bar read as a thicker bar.)
@@ -474,7 +503,12 @@ struct WidgetRowView: View {
         .frame(height: density.meterHeight)
         .animation(Motion.spring, value: data.fraction)
         .accessibilityHidden(true)
-        .hoverTooltip(state.tooltip)
+        // The row-level hover popover (when a projection exists) replaces the tooltip; rows without a
+        // window keep the tooltip.
+        if data.paceProjection == nil {
+            return AnyView(bar.hoverTooltip(state.tooltip))
+        }
+        return AnyView(bar)
     }
 
     private static let paceTickWidth: CGFloat = 2

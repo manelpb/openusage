@@ -537,9 +537,15 @@ final class WidgetDataStore {
 
     func data(for descriptor: WidgetDescriptor) -> WidgetData {
         var result: WidgetData
-        if let snapshot = snapshots[descriptor.providerID],
-           let line = snapshot.line(label: descriptor.metricLabel),
-           let data = resolve(line, descriptor: descriptor) {
+        if descriptor.isProjectionSummary {
+            result = projectionSummaryData(for: descriptor) ?? {
+                var noData = descriptor.sample
+                noData.hasData = false
+                return noData
+            }()
+        } else if let snapshot = snapshots[descriptor.providerID],
+                  let line = snapshot.line(label: descriptor.metricLabel),
+                  let data = resolve(line, descriptor: descriptor) {
             if descriptor.providerID == "ollama" {
                 AppLog.info(.refresh, "ollama widget: id=\(descriptor.id) metricLabel=\(descriptor.metricLabel) found=\(line.label) used=\(data.used)")
             }
@@ -587,6 +593,35 @@ final class WidgetDataStore {
             return nil
         }
         return StalenessHint(label: "Outdated", tooltip: "Last updated \(duration) ago")
+    }
+
+    /// Builds the per-provider run-out summary row: scans the provider's `.progress` lines for bounded
+    /// meters with a reset window, picks the most at-risk one, and returns a projection `WidgetData`.
+    /// `nil` when the provider has no qualifying meter (the row then renders "No data").
+    private func projectionSummaryData(for descriptor: WidgetDescriptor) -> WidgetData? {
+        guard let snapshot = snapshots[descriptor.providerID] else { return nil }
+        let now = now()
+        let meters = snapshot.lines.compactMap { line -> BoundedMeter? in
+            guard case .progress(let label, let used, let limit, _, let resetsAt, let periodDurationMs, _) = line else { return nil }
+            return BoundedMeter(title: label, used: used, limit: limit,
+                                resetsAt: resetsAt, periodDurationMs: periodDurationMs)
+        }
+        guard let selected = PaceProjectionSummary.select(from: meters, now: now) else { return nil }
+        var data = WidgetData(
+            title: selected.title, icon: descriptor.sample.icon, kind: .percent,
+            used: selected.used, limit: selected.limit
+        )
+        data.resetsAt = selected.resetsAt
+        data.periodDurationMs = selected.periodDurationMs
+        data.isProjection = true
+        data.projectionTitle = selected.title
+        data.trajectoryPoints = PaceProjectionTrajectory.points(
+            used: selected.used, limit: selected.limit,
+            resetsAt: selected.resetsAt ?? now, periodDuration: TimeInterval(selected.periodDurationMs ?? 0) / 1000,
+            now: now,
+            daily: snapshot.usageHistory?.series.daily ?? []
+        )
+        return data
     }
 
     private func resolve(_ line: MetricLine, descriptor: WidgetDescriptor) -> WidgetData? {

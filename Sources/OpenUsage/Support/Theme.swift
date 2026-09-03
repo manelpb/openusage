@@ -22,7 +22,7 @@ enum Theme {
         AnyShapeStyle(meterColor(severity))
     }
 
-    private static func meterColor(_ severity: WidgetData.MeterSeverity) -> Color {
+    static func meterColor(_ severity: WidgetData.MeterSeverity) -> Color {
         switch severity {
         case .normal: return Color(nsColor: .systemBlue)
         case .warning: return Color(nsColor: .systemYellow)

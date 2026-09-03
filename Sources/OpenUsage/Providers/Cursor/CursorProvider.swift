@@ -51,7 +51,8 @@ final class CursorProvider: ProviderRuntime {
                     scope: .accountWide,
                     estimatedCost: true,
                     sourceNote: "From your Cursor usage export"
-                )
+                ),
+            .projectionSummary(provider: provider)
         ] + WidgetDescriptor.spendTiles(
             provider: provider,
             valueTooltipNote: WidgetData.cursorUsageHistoryNote

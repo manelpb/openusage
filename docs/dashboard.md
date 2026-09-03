@@ -36,6 +36,19 @@ The ring center is always two short lines — a compact number on top and a quie
 - A red bar swaps the note for a red flame next to the metric name with the projected run-out time — `Limit in 3h 5m` or `Limit today at 11:49 PM`, following the same countdown/exact format as the reset label — and still shows the even-pace tick on the bar. **Click the time** to flip the format everywhere, just like clicking the reset label. When you're projected to finish right at the limit — no run-out before the reset, just no cushion left — the flame shows alone with no time.
 - Once the balance is spent — actually empty, or so close it rounds to `0` (like `0% left` or `$0.00`) — the bar stays red and the flame reads `Limit reached`, no matter how gentle the burn rate looked. A visibly empty bar never shows a calmer color.
 - **Hover the bar**, the spare note, or the flame for the pace projection at reset — the one number not already on the row: a blue bar shows the cushion you're on course to finish with (`~35% left at reset`), a yellow bar the usage it complements the spare note with (`~92% used at reset`), a red bar how far past the limit you're projected to land (`~12% over limit at reset`, or `~100% used at reset` when you're projected to finish right at it). Once spent it reads `Limit reached`.
+- **Hover the bar** on a bounded meter with a reset window to reveal a burn-down chart of the current
+  window: the even-pace reference line, your usage so far, and the projection line to the limit — the
+  run-out point, labeled with the same "Limit in 3h 5m" / "~35% left at reset" readout as the row.
+  Rows without a reset window (credit balances), and rows where the meter deliberately shows no
+  projection (a "Not started" session, or a window too young to trust), keep the plain hover tooltip.
+- Providers with bounded meters (Claude, Codex, Cursor, Antigravity, OpenCode) show a **Run-out** row:
+  a line graph of the most at-risk meter's projection — the even-pace reference line, your real
+  cumulative usage so far, and the projection line to the limit with a marker at the run-out point.
+  The chart labels its days and the reset time, and clicking it opens a larger, more readable version.
+  Hover a point on the chart to see its percent of the limit used and cumulative tokens. The header
+  names the meter and its run-out figure ("~35% left at reset" / "~12% over limit at reset"). On by
+  default; hide or reorder it from Customize like any metric. It shows nothing when no bounded meter
+  has a projection to draw.
 
 **Metrics without a limit** (daily spend, balances) show as a single line like `$4.08 spent` or `1.2M tokens`. The Today / Yesterday / Last 30 Days rows combine cost and tokens (`$4.08 · 1.2M tokens`) and can be turned on or off in Customize. A day with no usage reads "No data" rather than a misleading `$0.00 · 0 tokens` — the same as when the source can't be loaded at all. Big numbers are abbreviated to keep rows tidy (`$2.06K`, `1.5B`) — hover the value to see the exact figures and source note, such as a local estimate.
 

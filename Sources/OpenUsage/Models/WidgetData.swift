@@ -102,6 +102,18 @@ struct WidgetData: Hashable {
     var isChart: Bool = false
     var chartPoints: [MetricChartPoint] = []
     var chartNote: String?
+    /// True for the per-provider run-out summary row. The row draws an inline line graph of the most
+    /// at-risk bounded meter's projection instead of the value layout; `WidgetDataStore` will populate it.
+    var isProjection: Bool = false
+    /// The most at-risk bounded meter's name, shown in the run-out summary row's header. The row
+    /// recomputes the projection and verdict at render time from the stored `used`/`limit`/`resetsAt`/
+    /// `periodDurationMs` (via `paceProjection` and `meterState`), so it stays live on the row's 30s
+    /// tick rather than freezing between refreshes. `WidgetDataStore` will populate this.
+    var projectionTitle: String?
+    /// The real cumulative-usage trajectory for the run-out summary row, in normalized 0...1 points
+    /// (x = time through the window, y = share of the limit). `nil` when the provider has no per-day
+    /// data inside the window, so the chart falls back to a straight line.
+    var trajectoryPoints: [TrajectoryPoint]? = nil
 
     var isBounded: Bool { limit != nil }
 
@@ -634,6 +646,19 @@ extension WidgetData {
         let opposite = displayMode == .remaining ? used : max(0, limit - used)
         let word = (displayMode == .remaining ? WidgetDisplayMode.used : .remaining).label.lowercased()
         return "\((valuePrefix ?? "") + format(opposite)) \(word)"
+    }
+
+    /// The pace projection chart geometry for this row, or `nil` when there's no reset window to
+    /// project against (unbounded rows, no-data rows, rows whose reset/period cadence is unknown).
+    /// The chart only appears for bounded meters with a known window; everything else keeps the
+    /// plain hover tooltip.
+    var paceProjection: PaceProjection? {
+        guard hasData, let limit, limit > 0, let resetsAt,
+              let periodDurationMs, periodDurationMs > 0 else { return nil }
+        return PaceProjection(
+            used: used, limit: limit, resetsAt: resetsAt,
+            periodDuration: TimeInterval(periodDurationMs) / 1000, now: Date()
+        )
     }
 }
 

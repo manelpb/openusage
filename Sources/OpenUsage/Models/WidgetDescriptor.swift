@@ -14,6 +14,9 @@ struct WidgetDescriptor: Identifiable, Hashable {
     /// The Total Spend card keys on this to decide which providers feed the ring — a title match would
     /// wrongly rope in look-alike rows like OpenRouter's API-spend "Today".
     var isSpendTile: Bool = false
+    /// True for the per-provider run-out summary row, which is derived from the provider's other bounded
+    /// meters rather than a provider-emitted line. `WidgetDataStore` will special-case it to build the row's data.
+    var isProjectionSummary: Bool = false
     /// Stable scalar resources exported by `/v1/limits`. Empty for UI-only/history widgets.
     var limitResources: [LimitResourceDescriptor] = []
     /// Explicit aggregation semantics for this provider's normalized daily history. Exactly one

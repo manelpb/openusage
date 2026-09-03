@@ -660,15 +660,15 @@ final class LayoutStoreTests: XCTestCase {
         let store = LayoutStore(registry: registry, defaults: makeDefaults("RecommendedDefaults"), storageKey: "layout")
 
         XCTAssertEqual(Set(store.placed.map(\.descriptorID)), Set([
-            "claude.session", "claude.weekly", "claude.fable", "claude.trend",
+            "claude.session", "claude.weekly", "claude.fable", "claude.trend", "claude.projection",
             "claude.extra", "claude.today", "claude.yesterday", "claude.last30",
-            "codex.session", "codex.weekly", "codex.spark", "codex.sparkWeekly", "codex.trend",
+            "codex.session", "codex.weekly", "codex.spark", "codex.sparkWeekly", "codex.trend", "codex.projection",
             "codex.credits", "codex.rateLimitResets", "codex.today", "codex.yesterday", "codex.last30",
             "devin.daily", "devin.weekly", "devin.extra",
             "grok.weekly", "grok.trend",
             "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
             // Cursor spend tiles + usage trend are enabled, joining its live meters in the default layout.
-            "cursor.usage", "cursor.auto", "cursor.api", "cursor.grokBot", "cursor.trend",
+            "cursor.usage", "cursor.auto", "cursor.api", "cursor.grokBot", "cursor.trend", "cursor.projection",
             "cursor.onDemand", "cursor.today", "cursor.yesterday", "cursor.last30"
         ]))
         XCTAssertTrue(store.isMetricEnabled("claude.fable"))
@@ -692,12 +692,12 @@ final class LayoutStoreTests: XCTestCase {
         // Claude's core meters keep Fable directly below Weekly; optional Sonnet and spend-history
         // rows go below the caret.
         XCTAssertEqual(primaryByProvider["claude"], [
-            "claude.session", "claude.weekly", "claude.fable", "claude.extra", "claude.trend"
+            "claude.session", "claude.weekly", "claude.fable", "claude.extra", "claude.trend", "claude.projection"
         ])
         XCTAssertEqual(expandedByProvider["claude"], [
             "claude.sonnet", "claude.today", "claude.yesterday", "claude.last30"
         ])
-        XCTAssertEqual(primaryByProvider["codex"], ["codex.session", "codex.weekly", "codex.trend"])
+        XCTAssertEqual(primaryByProvider["codex"], ["codex.session", "codex.weekly", "codex.trend", "codex.projection"])
         // Spark (the optional model-specific limits) leads the On Demand section, before credits.
         XCTAssertEqual(expandedByProvider["codex"], [
             "codex.spark", "codex.sparkWeekly",
@@ -711,7 +711,7 @@ final class LayoutStoreTests: XCTestCase {
         ])
         // Cursor spend tiles + usage trend are enabled: the trend joins the primary rows, and the
         // today/yesterday/last30 rows sit below the caret alongside the other secondary metrics.
-        XCTAssertEqual(primaryByProvider["cursor"], ["cursor.usage", "cursor.auto", "cursor.api", "cursor.trend"])
+        XCTAssertEqual(primaryByProvider["cursor"], ["cursor.usage", "cursor.auto", "cursor.api", "cursor.trend", "cursor.projection"])
         XCTAssertEqual(expandedByProvider["cursor"], [
             "cursor.grokBot", "cursor.onDemand", "cursor.requests", "cursor.credits",
             "cursor.today", "cursor.yesterday", "cursor.last30"
