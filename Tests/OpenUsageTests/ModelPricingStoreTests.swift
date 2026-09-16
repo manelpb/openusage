@@ -82,6 +82,30 @@ final class ModelPricingStoreTests: XCTestCase {
         XCTAssertEqual(pricing.resolve(model: "auto")?.inputPerMillion, 1.25)
     }
 
+    func testNewerLegacyFeedKeepsBundledFallbackChoices() async throws {
+        try Data("""
+        {"updated_at": "2099-01-01T00:00:00Z", "pricing": {}, "alias_rules": []}
+        """.utf8).write(to: tempDir.appendingPathComponent("supplement.json"))
+        let store = ModelPricingStore(
+            http: RoutingHTTPClient(handler: { _ in throw URLError(.notConnectedToInternet) }),
+            cacheDirectory: tempDir,
+            bundledData: { name in
+                if name == "pricing_supplement" {
+                    return Data("""
+                    {"updated_at": "2026-08-01T00:00:00Z", "pricing": {}, "alias_rules": [],
+                     "fallback_models": {"codex": ["gpt-5.6-sol"]}}
+                    """.utf8)
+                }
+                return Self.bundledFixtures(name)
+            }
+        )
+
+        let pricing = await store.current()
+        XCTAssertEqual(pricing.supplement.updatedAt, "2099-01-01T00:00:00Z")
+        XCTAssertEqual(pricing.supplement.fallbackModels["codex"], ["gpt-5.6-sol"])
+        await store.refreshNow()
+    }
+
     func testRefreshFetchesAllSourcesAndAppliesData() async throws {
         let (store, http) = makeStore(handler: { Self.respond(to: $0) })
         await store.refreshNow()
@@ -92,6 +116,48 @@ final class ModelPricingStoreTests: XCTestCase {
         XCTAssertEqual(pricing.resolve(model: "fetched-dev-model")?.inputPerMillion, 1)
         XCTAssertEqual(pricing.resolve(model: "auto")?.inputPerMillion, 9, "fetched supplement replaces bundled")
         XCTAssertEqual(pricing.resolve(model: "bundled-model")?.inputPerMillion, 1, "bundled entries survive the merge")
+    }
+
+    func testFeedRemovingSelectedFallbackRequestsRecalculationAndExcludesItsEstimates() async throws {
+        let reference = "gpt-5.6-sol"
+        let store = ModelPricingStore(
+            http: RoutingHTTPClient(handler: { _ in
+                HTTPResponse(statusCode: 200, headers: [:], body: Data("""
+                {"updated_at":"2099-01-01", "pricing":{}, "alias_rules":[], "fallback_models":{"codex":[]}}
+                """.utf8))
+            }),
+            cacheDirectory: tempDir,
+            sourceURLs: [.supplement: URL(string: "https://example.com/supplement.json")!],
+            bundledData: { name in
+                guard name == "pricing_supplement" else { return Self.bundledFixtures(name) }
+                return Data("""
+                {"updated_at":"2026-08-01", "alias_rules":[], "fallback_models":{"codex":["gpt-5.6-sol"]},
+                 "pricing":{"gpt-5.6-sol":{"input_per_million":5,"output_per_million":30}}}
+                """.utf8)
+            }
+        )
+        let event = CodexLogUsageScanner.Event(
+            timestamp: Date(), model: "unlisted-model-a", input: 1_000, cached: 0, output: 100,
+            reasoning: 0, total: 1_100, isFast: false
+        )
+        var refreshState = CodexFallbackPricingRefreshState()
+        let initial = await store.current()
+        XCTAssertTrue(refreshState.update(model: reference, options: initial.fallbackOptions(for: "codex")))
+        let estimated = CodexLogUsageScanner.aggregate(
+            events: [event], since: .distantPast, pricing: initial, fallbackModel: reference
+        )
+        XCTAssertEqual(try XCTUnwrap(estimated.series.daily.first?.costUSD), 0.008, accuracy: 0.000_001)
+
+        await store.refreshNow()
+        let refreshed = await store.current()
+        XCTAssertTrue(refreshed.fallbackOptions(for: "codex").isEmpty)
+        XCTAssertTrue(refreshState.update(model: reference, options: refreshed.fallbackOptions(for: "codex")))
+        let recalculated = CodexLogUsageScanner.aggregate(
+            events: [event], since: .distantPast, pricing: refreshed, fallbackModel: reference
+        )
+        XCTAssertTrue(recalculated.series.daily.isEmpty)
+        XCTAssertNil(recalculated.fallbackPricingModelsByDay)
+        XCTAssertEqual(recalculated.unknownModelsByDay, estimated.unknownModelsByDay)
     }
 
     func testCachePersistsAcrossStoreInstances() async throws {

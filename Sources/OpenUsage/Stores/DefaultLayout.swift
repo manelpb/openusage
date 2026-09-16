@@ -6,6 +6,20 @@ import Foundation
 /// define an ID (e.g. the test fixtures) silently ignore it. The provider-section order isn't seeded
 /// here: an empty saved order reconciles to plain registry order in `LayoutStore`.
 enum DefaultLayout {
+    /// Account cards inherit their family's existing defaults. Keep the migration baseline unexpanded
+    /// so a newly discovered card also receives its metrics on an existing installation.
+    static func expandingAccounts(_ metricIDs: [String], providerIDs: [String]) -> [String] {
+        metricIDs.flatMap { metricID -> [String] in
+            guard let separator = metricID.firstIndex(of: ".") else { return [metricID] }
+            let family = String(metricID[..<separator])
+            let suffix = metricID[separator...]
+            let additionalIDs = providerIDs.filter {
+                $0 != family && ProviderAccountID.family(of: $0) == family
+            }
+            return [metricID] + additionalIDs.map { "\($0)\(suffix)" }
+        }
+    }
+
     static let metricIDs: [String] = [
         "antigravity.geminiPro", "antigravity.geminiWeekly", "antigravity.claude", "antigravity.claudeWeekly",
         "antigravity.trend", "antigravity.projection", "antigravity.today", "antigravity.yesterday", "antigravity.last30",
@@ -27,6 +41,8 @@ enum DefaultLayout {
         "grok.weekly", "grok.trend",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
 
+        "ollama.session", "ollama.weekly", "ollama.last4Weeks",
+
         "opencode.session", "opencode.weekly", "opencode.monthly", "opencode.trend", "opencode.projection",
         "opencode.today", "opencode.yesterday", "opencode.last30",
 
@@ -35,9 +51,7 @@ enum DefaultLayout {
 
         "zai.session", "zai.weekly", "zai.webSearches",
 
-        "deepseek.balance",
-
-        "ollama.session", "ollama.weekly"
+        "deepseek.balance"
     ]
 
     /// Frozen snapshot of the default-on metrics from the release that introduced default seeding.
@@ -101,6 +115,9 @@ enum DefaultLayout {
         "copilot.orgCredits", "copilot.orgSpend", "copilot.chat", "copilot.completions",
         "devin.extra",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
+        // Ollama: the Session and Weekly meters stay above the fold; the rolling four-week spend total
+        // (always $0.00 on a subscription, real only for pay-as-you-go) sits below the caret.
+        "ollama.last4Weeks",
         // OpenCode: the three Go caps (Session/Weekly/Monthly) and Usage Trend stay above the fold —
         // matching every other provider — with the spend tiles (Today/Yesterday/Last 30 Days) below.
         "opencode.today", "opencode.yesterday", "opencode.last30",

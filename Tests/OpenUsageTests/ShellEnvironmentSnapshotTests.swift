@@ -65,6 +65,55 @@ final class ShellEnvironmentSnapshotTests: XCTestCase {
         XCTAssertEqual(store.load(), previous)
     }
 
+    func testUpgradeDiscardsLegacySnapshotAndDiscoversCustomSwapLocations() async throws {
+        for (key, value, root) in [
+            ("XSWAP_HOME", "/test/custom-swap", "/test/custom-swap"),
+            ("XDG_DATA_HOME", "/test/data", "/test/data/codex-swap")
+        ] {
+            let defaults = makeScratchDefaults()
+            // Earlier builds never captured the Swap location keys, so missing values in their
+            // saved copy cannot establish that the user has no custom folder.
+            let legacy = ShellEnvironmentSnapshot(values: ["CODEX_HOME": "/test/main"], capturedAt: Date())
+            defaults.set(try JSONEncoder().encode(legacy), forKey: "openusage.shellEnvSnapshot.v1")
+            let store = ShellEnvironmentSnapshotStore(defaults: defaults)
+            let launchSnapshot = store.load()
+            XCTAssertNil(launchSnapshot, "An upgrade must capture the newly supported shell settings before startup")
+
+            let stdout = [
+                "__OPENUSAGE_ENV_BEGIN__", "PATH=/usr/bin", "CODEX_HOME=/test/main",
+                "\(key)=\(value)", "__OPENUSAGE_ENV_END__",
+            ].joined(separator: "\0")
+            let shell = LoginShellEnvironment(runner: FixedRunner(stdout: stdout))
+            let captured = await Task.detached { shell.ensureCaptured() }.value
+            XCTAssertTrue(captured)
+            let reader = ProcessEnvironmentReader(
+                processEnvironment: [:], shellEnvironment: shell, launchSnapshot: { launchSnapshot }
+            )
+            XCTAssertEqual(reader.value(for: key), value)
+
+            let identity = try XCTUnwrap(CodexAccountIdentity(accountID: "workspace-a", email: "personal@example.com"))
+            let files = FakeFiles([
+                "/test/main/auth.json": CodexSwapAccountTests.credential(identity, token: "main-personal"),
+                root + "/accounts.json": #"""
+                {"schemaVersion":1,"mainHome":"/test/main","accounts":[
+                  {"number":1,"alias":"Personal","home":"/test/personal",
+                   "identity":{"accountId":"workspace-a","email":"personal@example.com"}}
+                ]}
+                """#,
+            ])
+            let accounts = CodexSwapAccount.discover(environment: reader, files: files,
+                                                    home: URL(fileURLWithPath: "/test"))
+            XCTAssertEqual(accounts.count, 1, "The custom registry must be visible on the first launch after upgrading")
+            let auth = CodexAuthStore(environment: reader, files: files, keychain: FakeKeychain())
+            let candidate = try XCTUnwrap(auth.loadAuthCandidates().first)
+            XCTAssertTrue(candidate.readOnly, "Swap's shared login must remain read-only during the upgrade")
+            XCTAssertNil(candidate.auth.tokens?.refreshToken)
+
+            await store.startRefreshTask(shellEnvironment: shell).value
+            XCTAssertEqual(store.load()?.values[key], value, "Later launches must retain the newly captured setting")
+        }
+    }
+
     // MARK: - ProcessEnvironmentReader layering (process env → snapshot pin for identity keys → live capture)
 
     func testReaderPrefersTheProcessEnvironment() {

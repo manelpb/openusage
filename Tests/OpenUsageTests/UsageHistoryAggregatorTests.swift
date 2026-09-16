@@ -2,6 +2,36 @@ import XCTest
 @testable import OpenUsage
 
 final class UsageHistoryAggregatorTests: XCTestCase {
+    func testFallbackProvenanceSurvivesHistoryCodingMergingAndRendering() throws {
+        var localHistory = history(tokens: 100, cost: 1, model: "unlisted-model-a", unknown: ["unlisted-model-a"])
+        localHistory.fallbackPricingModelsByDay = ["2026-07-13": ["gpt-5.6-sol"]]
+        var peerHistory = history(tokens: 200, cost: 2, model: "unlisted-model-b", unknown: ["unlisted-model-b"])
+        peerHistory.fallbackPricingModelsByDay = ["2026-07-13": ["gpt-5.5"]]
+        let local = ProviderSnapshot(
+            providerID: "codex", displayName: "Codex", lines: [],
+            usageHistory: try JSONDecoder().decode(ProviderUsageHistory.self, from: JSONEncoder().encode(localHistory))
+        )
+        let descriptor = UsageHistoryDescriptor(scope: .machineLocal, estimatedCost: true, sourceNote: "logs")
+        let merged = try XCTUnwrap(UsageHistoryAggregator.merged(
+            localSnapshots: ["codex": local],
+            peerDocuments: [document(deviceID: "peer", updatedAt: 100, providers: ["codex": peerHistory])],
+            descriptors: ["codex": descriptor], now: localDay(2026, 7, 13)
+        )["codex"])
+
+        XCTAssertEqual(merged.fallbackPricingModelsByDay, ["2026-07-13": ["gpt-5.6-sol", "gpt-5.5"]])
+        let rendered = UsageHistorySnapshotRenderer.render(
+            local: local, history: merged, descriptor: descriptor, now: localDay(2026, 7, 13)
+        )
+        guard case .values(_, _, _, _, let unknownModels, let breakdown) = rendered.lines.first(where: { $0.label == "Today" }) else {
+            return XCTFail("missing spend row")
+        }
+        XCTAssertEqual(unknownModels, ["unlisted-model-a", "unlisted-model-b"])
+        XCTAssertEqual(breakdown?.sourceNote, "Across your Macs · logs · Fallback estimates: GPT 5.5, GPT 5.6 Sol")
+
+        let legacy = Data(#"{"series":{"daily":[]},"unknownModelsByDay":{}}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(ProviderUsageHistory.self, from: legacy).fallbackPricingModelsByDay)
+    }
+
     func testAggregationAddsMachineLocalHistoryAndIgnoresAccountWideHistory() throws {
         let local = ProviderSnapshot(
             providerID: "claude",
@@ -72,7 +102,8 @@ final class UsageHistoryAggregatorTests: XCTestCase {
             unknownModelsByDay: [
                 "2026-07-13": ["current-unknown"],
                 "2026-06-12": ["stale-unknown"]
-            ]
+            ],
+            fallbackPricingModelsByDay: ["2026-06-12": ["gpt-5.6-sol"]]
         )
 
         let merged = UsageHistoryAggregator.merged(
@@ -89,6 +120,22 @@ final class UsageHistoryAggregatorTests: XCTestCase {
         XCTAssertEqual(claude.series.daily.reduce(0) { $0 + $1.totalTokens }, 30)
         XCTAssertEqual(claude.modelUsage?.daily.flatMap(\.models).map(\.model), ["Current"])
         XCTAssertEqual(claude.unknownModelsByDay, ["2026-07-13": ["current-unknown"]])
+        XCTAssertNil(claude.fallbackPricingModelsByDay, "expired estimates must not affect in-window source notes")
+        let rendered = UsageHistorySnapshotRenderer.render(
+            local: ProviderSnapshot(providerID: "claude", displayName: "Claude", lines: []),
+            history: claude,
+            descriptor: UsageHistoryDescriptor(scope: .machineLocal, estimatedCost: true, sourceNote: "logs"),
+            now: localDay(2026, 7, 13)
+        )
+        for line in rendered.lines {
+            switch line {
+            case .values(_, _, _, _, _, let breakdown):
+                XCTAssertEqual(breakdown?.sourceNote, "Across your Macs · logs")
+            case .chart(_, _, let note):
+                XCTAssertEqual(note, "Across your Macs · logs")
+            default: break
+            }
+        }
     }
 
     func testClaudeOrganizationsMatchByIdentityInsteadOfCardID() throws {
@@ -122,7 +169,10 @@ final class UsageHistoryAggregatorTests: XCTestCase {
             ]
         )
         peer.schema = UsageHistoryDocument.accountSchema
-        peer.identities = ["claude": "USER|WORK", "claude@abcdef12": "user|personal"]
+        peer.identities = [
+            "claude": "USER|WORK", "claude@abcdef12": "user|personal",
+            "codex": "legacy-codex-account",
+        ]
         XCTAssertNoThrow(try peer.validate())
 
         let descriptor = UsageHistoryDescriptor(scope: .machineLocal, estimatedCost: true, sourceNote: "logs")

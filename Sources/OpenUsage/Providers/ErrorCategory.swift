@@ -55,7 +55,7 @@ extension ClaudeAuthError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {
         case .notLoggedIn: .notLoggedIn
-        case .sessionExpired, .tokenExpired, .desktopTokenExpired: .authExpired
+        case .sessionExpired, .tokenExpired, .desktopTokenExpired, .swapTokenExpired: .authExpired
         case .invalidOAuthURL, .desktopCredentialsUnavailable: .authInvalid
         case .desktopPermissionRequired: .credentialAccess
         case .credentialsChanged: .other
@@ -172,6 +172,26 @@ extension CopilotUsageError: CategorizedError {
     }
 }
 
+extension OllamaAuthError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .missingKey, .notSignedIn: .notLoggedIn
+        case .keyUnreadable: .credentialAccess
+        case .invalidKey: .authInvalid
+        }
+    }
+}
+
+extension OllamaUsageError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .connectionFailed: .network
+        case .invalidResponse: .decoding
+        case .requestFailed(let status): ErrorCategory.http(status)
+        }
+    }
+}
+
 extension OpenCodeUsageError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {
@@ -263,27 +283,6 @@ extension DeepSeekUsageError: CategorizedError {
         case .connectionFailed: .network
         case .invalidResponse: .decoding
         case .requestFailed(let status): ErrorCategory.http(status)
-        }
-    }
-}
-
-extension OllamaAuthError: CategorizedError {
-    var errorCategory: ErrorCategory {
-        switch self {
-        case .missingSession, .missingAPIKey: .notLoggedIn
-        case .sessionExpired: .authExpired
-        case .invalidAPIKey: .authInvalid
-        }
-    }
-}
-
-extension OllamaUsageError: CategorizedError {
-    var errorCategory: ErrorCategory {
-        switch self {
-        case .connectionFailed: .network
-        case .invalidResponse: .decoding
-        case .requestFailed(let status): ErrorCategory.http(status)
-        case .parseFailed: .decoding
         }
     }
 }

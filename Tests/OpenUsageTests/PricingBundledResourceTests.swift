@@ -41,6 +41,7 @@ final class PricingBundledResourceTests: XCTestCase {
             ("claude-4.6-opus-max-thinking", 5), ("claude-4.6-opus-max-thinking-fast", 30),
             ("gpt-5.5-xhigh-fast", 12.5),
             ("gpt-5.6-sol-ultra", 5), ("gpt-5.6-sol-ultra-fast", 10),
+            ("gpt-6-astra", 10), ("gpt-6-astra-high", 10), ("gpt-6-astra-high-fast", 20),
             ("gpt-5.6-terra-high", 2), ("gpt-5.6-terra-high-fast", 4),
             ("gpt-5.6-luna", 0.2), ("gpt-5.6-luna-fast", 0.4),
             ("gemini-3.6-flash-high", 1.5), ("gemini-3.7-flash-high", 0.75),
@@ -51,7 +52,9 @@ final class PricingBundledResourceTests: XCTestCase {
             ("grok-4-6-xhigh-fast", 4), ("kimi-k2p5", 0.6),
             ("kimi-k2.7-code", 0.95), ("kimi-k2p7", 0.95), ("kimi-k3-max", 3),
             ("claude-4.7-opus-high-thinking", 5), ("claude-4.7-opus-max-thinking-fast", 30),
-            ("glm-5.2-max", 1.4), ("glm-5.3-max", 1.4)
+            ("glm-5.2-max", 1.4), ("glm-5.3-max", 1.4),
+            ("claude-fable-5-1-thinking-high", 10),
+            ("grok-bot-default", 4), ("grok-bot-automation", 2)
         ]
         for (model, expected) in expectedInputRates {
             XCTAssertEqual(pricing.resolve(model: model)?.inputPerMillion, expected, model)
@@ -93,6 +96,33 @@ final class PricingBundledResourceTests: XCTestCase {
             XCTAssertEqual(pricing.resolve(model: variant), pricing.resolve(model: canonical), "wrong rates for '\(variant)'")
         }
         XCTAssertNil(pricing.supplement.canonicalName(for: "gemini-3-pro"))
+    }
+
+    /// Claude Fable 5.1: same $10/$50 input/output as Fable 5, but cache reads are $0.25/M
+    /// (0.025x). Cursor CSV slugs (`claude-fable-5-1-thinking-*`) and the Anthropic API id
+    /// (`claude-fable-5-1`) must not collapse into the Fable 5 catalog entry.
+    func testClaudeFable51PricingAndAliases() throws {
+        let pricing = Self.pricing
+        let fable51 = try XCTUnwrap(pricing.resolve(model: "claude-fable-5-1-thinking-high"))
+        XCTAssertEqual(fable51.inputPerMillion, 10.0)
+        XCTAssertEqual(fable51.cacheWritePerMillion, 12.5)
+        XCTAssertEqual(fable51.cacheReadPerMillion, 0.25)
+        XCTAssertEqual(fable51.outputPerMillion, 50.0)
+
+        for model in [
+            "claude-fable-5-1", "claude-fable-5.1", "claude-fable-5-1-thinking",
+            "claude-fable-5-1-thinking-low", "claude-fable-5-1-thinking-medium",
+            "claude-fable-5.1-thinking-xhigh", "claude-fable-5-1[1m]"
+        ] {
+            XCTAssertEqual(pricing.supplement.canonicalName(for: model), "claude-fable-5.1", model)
+            XCTAssertEqual(pricing.resolve(model: model), fable51, model)
+        }
+
+        let fable5 = try XCTUnwrap(pricing.resolve(model: "claude-fable-5"))
+        XCTAssertEqual(fable5.inputPerMillion, fable51.inputPerMillion)
+        XCTAssertEqual(fable5.outputPerMillion, fable51.outputPerMillion)
+        XCTAssertNotEqual(fable5.cacheReadPerMillion, fable51.cacheReadPerMillion)
+        XCTAssertEqual(pricing.supplement.canonicalName(for: "claude-fable-5-thinking-high"), "claude-fable-5")
     }
 
     /// Claude Fable 5 (carried over from the old manifest tests): priced at 2x standard Claude 4.8
@@ -196,6 +226,8 @@ final class PricingBundledResourceTests: XCTestCase {
             "Opus 4.8 (Auto)": "claude-opus-4-8",
             "Sonnet 5 (Auto Intelligence)": "claude-sonnet-5",
             "Fable 5 (Auto Balanced)": "claude-fable-5",
+            "Fable 5.1 (Auto Balanced)": "claude-fable-5.1",
+            "Claude Fable 5.1 (Auto)": "claude-fable-5.1",
             "Haiku 4.5 (Auto Cost)": "claude-haiku-4-5",
             "Composer 2.5 (Auto)": "composer-2.5",
             "Composer 2.5 Fast (Auto)": "composer-2.5-fast",
@@ -206,6 +238,7 @@ final class PricingBundledResourceTests: XCTestCase {
             "Cursor Grok 4.5 Fast (Auto)": "grok-4.5-fast",
             "GPT-5.5 (Auto)": "gpt-5.5",
             "GPT-5.6 Sol (Auto Cost)": "gpt-5.6-sol",
+            "GPT-6 Astra (Auto Balanced)": "gpt-6-astra",
             "GPT-5.6 Luna (Auto)": "gpt-5.6-luna",
             "Gemini 3.1 Pro (Auto Balanced)": "gemini-3.1-pro-preview",
             "Gemini 3.6 Flash (Auto)": "gemini-3.6-flash",
@@ -233,6 +266,9 @@ final class PricingBundledResourceTests: XCTestCase {
         let expectedRates: [(String, [Double])] = [
             ("gpt-5.6-sol-ultra", [5, 6.25, 0.5, 30]),
             ("gpt-5.6-sol-ultra-fast", [10, 12.5, 1, 60]),
+            ("gpt-6-astra", [10, 12.5, 1, 50]),
+            ("gpt-6-astra-high", [10, 12.5, 1, 50]),
+            ("gpt-6-astra-high-fast", [20, 25, 2, 100]),
             ("gpt-5.6-terra-high", [2, 2.5, 0.2, 12]),
             ("gpt-5.6-terra-high-fast", [4, 5, 0.4, 24]),
             ("gpt-5.6-luna", [0.2, 0.25, 0.02, 1.2]),
@@ -344,6 +380,21 @@ final class PricingBundledResourceTests: XCTestCase {
             }
             XCTAssertEqual(pricing.supplement.canonicalName(for: "cursor-grok-\(version)-high"), "grok-\(version)")
             XCTAssertEqual(pricing.supplement.canonicalName(for: "cursor-grok-\(version)-high-fast"), "grok-\(version)-fast")
+        }
+    }
+
+    func testGrokBotModesUseDistinctPricing() throws {
+        let pricing = Self.pricing
+        for (bot, canonical) in [
+            ("grok-bot-default", "grok-4.6-fast"),
+            ("grok-bot-automation", "grok-4.6")
+        ] {
+            XCTAssertEqual(pricing.supplement.canonicalName(for: bot), canonical, bot)
+            XCTAssertEqual(pricing.resolve(model: bot), try XCTUnwrap(pricing.resolve(model: canonical)), bot)
+        }
+        for bot in ["grok-bot-cua", "grok-bot-unknown"] {
+            XCTAssertNil(pricing.supplement.canonicalName(for: bot), bot)
+            XCTAssertNil(pricing.resolve(model: bot), bot)
         }
     }
 

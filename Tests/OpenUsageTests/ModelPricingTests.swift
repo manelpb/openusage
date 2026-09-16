@@ -36,6 +36,91 @@ final class ModelPricingTests: XCTestCase {
 
     // MARK: - Resolution
 
+    func testMuseSpark13EffortsShareBundledRates() {
+        let pricing = TestPricing.bundled
+        let expected = rates(1.25, 4.25, cacheWrite: 1.25, cacheRead: 0.15)
+        let canonical = "muse-spark-1.3"
+        let variants = [
+            canonical, "muse-spark-1.3-minimal", "muse-spark-1.3-low",
+            "muse-spark-1.3-medium", "muse-spark-1.3-high", "muse-spark-1.3-xhigh",
+            "muse-spark-1.3-extra-high", "muse-spark-1.3-max"
+        ]
+        let offline = ModelPricing(
+            supplement: pricing.supplement, primary: PricingCatalog(), secondary: PricingCatalog()
+        )
+
+        for model in variants {
+            XCTAssertEqual(pricing.supplement.canonicalName(for: model), canonical, model)
+            XCTAssertEqual(pricing.resolve(model: model), expected, model)
+            XCTAssertEqual(offline.resolve(model: model), expected, model)
+        }
+
+        // Contributor models have separate rates; unknown versions and speed tiers must not alias.
+        for model in [
+            "muse-spark-1.3-contributor", "muse-spark-1.3-contributor-high",
+            "muse-spark-1.4-high", "muse-spark-1x3-high", "muse-spark-1.3-high-fast"
+        ] {
+            XCTAssertNil(pricing.supplement.canonicalName(for: model), model)
+            XCTAssertNil(offline.resolve(model: model), model)
+        }
+    }
+
+    func testAntigravityDisplayLabelsAndPlaceholderIDsResolveToCatalogModels() {
+        let pricing = TestPricing.bundled
+        let expectations = [
+            ("Gemini 3.1 Pro (High)", "gemini-3.1-pro-preview"),
+            ("Gemini 3.1 Pro (Low)", "gemini-3.1-pro-preview"),
+            ("gemini-pro-default", "gemini-3.1-pro-preview"),
+            ("gemini-pro-agent", "gemini-3.1-pro-preview"),
+            ("Gemini 3.5 Flash (Low)", "gemini-3.5-flash"),
+            ("Gemini 3.5 Flash (Medium)", "gemini-3.5-flash"),
+            ("Gemini 3.6 Flash (High)", "gemini-3.6-flash"),
+            ("Gemini 3.7 Flash (High)", "gemini-3.7-flash"),
+            ("Gemini 3.8 Flash (Auto Balanced)", "gemini-3.8-flash"),
+            ("Gemini 3.8 Flash", "gemini-3.8-flash"),
+            ("Claude Opus 4.6 (Thinking)", "claude-opus-4-6"),
+            ("claude-opus-4-6-thinking", "claude-opus-4-6"),
+            ("claude-sonnet-4-6-thinking-high", "claude-sonnet-4-6"),
+            ("Claude Sonnet 4.6 (Thinking)", "claude-sonnet-4-6"),
+        ]
+        for (label, canonical) in expectations {
+            XCTAssertEqual(pricing.supplement.canonicalName(for: label), canonical, label)
+            XCTAssertNotNil(pricing.resolve(model: label), label)
+        }
+        for unaliased in ["gemini-default", "Gemini 3.1 Pro Turbo", "gemini-pro-agent-fast", "gemini-3.8-flash-tiered"] {
+            XCTAssertNil(pricing.supplement.canonicalName(for: unaliased), unaliased)
+        }
+    }
+
+    func testGemini38FlashEffortAndRouterAliasesUseBundledAPIRates() throws {
+        let pricing = TestPricing.bundled
+        let expected = rates(0.75, 3.75, cacheWrite: 0.75, cacheRead: 0.075)
+        let canonical = "gemini-3.8-flash"
+        let variants = [
+            canonical, "gemini-3.8-flash-preview",
+            "gemini-3.8-flash-none", "gemini-3.8-flash-low", "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-high", "gemini-3.8-flash-xhigh", "gemini-3.8-flash-exp-a", "gemini-3.8-flash-exp-b-high",
+            "gemini-3.8-flash-preview-high", "gemini-3.8-flash-xhigh-preview",
+            "Gemini 3.8 Flash (Auto)", "Gemini 3.8 Flash (Auto Balanced)",
+            "Gemini 3.8 Flash (Auto Cost)", "Gemini 3.8 Flash (Auto Intelligence)"
+        ]
+
+        for model in variants {
+            XCTAssertEqual(pricing.supplement.canonicalName(for: model), canonical, model)
+            XCTAssertEqual(pricing.resolve(model: model), expected, model)
+        }
+
+        // The supplement must work on first launch, without a live catalog refresh.
+        let offline = ModelPricing(
+            supplement: pricing.supplement, primary: PricingCatalog(), secondary: PricingCatalog()
+        )
+        XCTAssertEqual(offline.resolve(model: "gemini-3.8-flash-high"), expected)
+        for model in ["gemini-3.8-flash-bogus", "gemini-3.8-flash-high-fast", "gemini-3.8-pro-high"] {
+            XCTAssertNil(pricing.supplement.canonicalName(for: model), model)
+            XCTAssertNil(offline.resolve(model: model), model)
+        }
+    }
+
     func testModelResolutionNormalizesDatesProviderPrefixesAndSeparators() throws {
         let scenarios: [(catalogKey: String, model: String, expected: Double)] = [
             ("gpt-5.5", "gpt-5.5", 5),
@@ -186,6 +271,51 @@ final class ModelPricingTests: XCTestCase {
     }
 
     // MARK: - Cost math
+
+    func testFallbackChoicesUseOnlyListedModelsWithUsableExactPrices() throws {
+        let supplement = """
+        {"pricing": {}, "alias_rules": [],
+         "fallback_models": {"codex": ["gpt-5.6-sol", "missing", "gpt-5.6-sol", "free-model", "gpt-8"]}}
+        """
+        let pricing = try makePricing(
+            supplementJSON: supplement,
+            primary: ["gpt-5.6-sol": rates(5, 30), "free-model": rates(0, 0),
+                      "gpt-8-20260801": rates(1, 2), "unlisted-model": rates(1, 2)]
+        )
+
+        XCTAssertEqual(pricing.fallbackOptions(for: "codex"), [
+            PricingFallbackOption(id: "gpt-5.6-sol", title: "GPT 5.6 Sol")
+        ])
+        XCTAssertTrue(pricing.fallbackOptions(for: "claude").isEmpty)
+        XCTAssertNil(pricing.fallbackRates(model: "unlisted-model", providerID: "codex"))
+        XCTAssertNotNil(pricing.resolve(model: "gpt-8"), "regular fuzzy pricing still works")
+    }
+
+    func testFallbackChoicesPreserveSupplementOrderAndSecondaryPrices() throws {
+        let pricing = try makePricing(
+            supplementJSON: """
+            {"pricing": {}, "alias_rules": [], "fallback_models": {"codex": ["gpt-5.5", "gpt-5.4"]}}
+            """,
+            primary: ["gpt-5.4": rates(2.5, 15)],
+            secondary: ["gpt-5.5": rates(5, 30)]
+        )
+        XCTAssertEqual(pricing.fallbackOptions(for: "codex").map(\.id), ["gpt-5.5", "gpt-5.4"])
+    }
+
+    func testBundledFallbackChoicesHaveExactPricesAndNoDuplicates() {
+        let pricing = TestPricing.bundled
+        let listed = pricing.supplement.fallbackModels["codex"] ?? []
+        XCTAssertFalse(listed.isEmpty)
+        XCTAssertEqual(Set(listed).count, listed.count)
+        XCTAssertEqual(pricing.fallbackOptions(for: "codex").map(\.id), listed)
+    }
+
+    func testSupplementFallbackChoicesPreserveExplicitEmptyLists() {
+        let bundled = PricingSupplement(fallbackModels: ["codex": ["gpt-5.5"]])
+        XCTAssertEqual(PricingSupplement().fillingMissingFallbackModels(from: bundled).fallbackModels, bundled.fallbackModels)
+        let disabled = PricingSupplement(fallbackModels: ["codex": []])
+        XCTAssertEqual(disabled.fillingMissingFallbackModels(from: bundled).fallbackModels["codex"], [])
+    }
 
     func testCostUsesAllTokenBuckets() throws {
         let entry = ModelRates(

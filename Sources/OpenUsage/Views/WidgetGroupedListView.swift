@@ -16,12 +16,13 @@ struct WidgetGroupedListView: View {
     @Environment(\.colorScheme) private var colorScheme
     let reorderSpaceName: String
     @Binding var reorderLift: ReorderLift?
-    var onSignIn: ((String) -> Void)?
 
     @State private var frameStore = ReorderFrameStore()
     @State private var activeProviderID: String?
     @State private var activeMetricID: String?
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
+
+    @Environment(\.codexResetClaims) private var codexResetClaims
 
     var body: some View {
         // Provider-section spacing is noticeably wider than the in-card row rhythm (so groups
@@ -52,10 +53,7 @@ struct WidgetGroupedListView: View {
             warning: dataStore.headerNotice(for: group.provider.id),
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
             staleness: dataStore.stalenessHint(for: group.provider.id),
-            onCopyScreenshot: { shareCard(group) },
-            onSignIn: group.provider.supportsInAppSignIn
-                ? onSignIn.map { callback in { callback(group.provider.id) } }
-                : nil
+            onCopyScreenshot: { shareCard(group) }
         )
         // Keep the provider mark and hover-revealed copy control aligned with the card's content edges.
         .padding(.horizontal, 8)
@@ -237,6 +235,7 @@ struct WidgetGroupedListView: View {
             onToggleMeterStyle: { dataStore.meterStyle.toggle() },
             condensedTop: condensedTop
         )
+            .environment(\.codexResetClaim, codexResetClaims[providerID])
             .contentShape(Rectangle())
             .opacity(activeMetricID == descriptor.id ? 0 : 1)
             .highPriorityGesture(metricDragGesture(for: descriptor, providerID: providerID))

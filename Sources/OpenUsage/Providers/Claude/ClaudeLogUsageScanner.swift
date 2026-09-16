@@ -28,10 +28,13 @@ actor ClaudeLogUsageScanner {
     private let cacheIdentityOverride: String?
     private let organizationID: String?
     private let accountID: String?
+    private let additionalConfigDirectories: [String]
     private let allowsUnattributedSessions: Bool
     private var sessionOwnership: [String: (
-        size: Int, mtime: Date, organizationID: String?, accountID: String?
+        size: Int, mtime: Date, identity: ClaudeSessionIdentity
     )] = [:]
+
+    private let readOwnershipData: @Sendable (URL) throws -> Data
 
     /// One parsed usage line. Token buckets are pre-normalized into `TokenBreakdown`; dedup fields
     /// ride along so the global dedup pass can run over cached entries.
@@ -52,7 +55,9 @@ actor ClaudeLogUsageScanner {
     /// in-memory and disk caches and the rest reuse it. Tests inject an isolated memory-only scanner.
     private static let sharedScanner = IncrementalJSONLScanner<Entry>(
         logTag: LogTag.plugin("claude"),
-        persistence: JSONLScanCachePersistence(namespace: "claude", schemaVersion: 1)
+        // v2: accept records whose nested `usage.iterations[].model` is null (#1253); cached
+        // parses from v1 silently dropped them, so every file must re-parse once.
+        persistence: JSONLScanCachePersistence(namespace: "claude", schemaVersion: 2)
     )
 
     static func flushPersistentCacheWrites() async {
@@ -66,7 +71,11 @@ actor ClaudeLogUsageScanner {
         cacheIdentityOverride: String? = nil,
         accountUUID: String? = nil,
         organizationUUID: String? = nil,
-        allowsUnattributedSessions: Bool = false
+        allowsUnattributedSessions: Bool = false,
+        additionalConfigDirectories: [String] = [],
+        readOwnershipData: @escaping @Sendable (URL) throws -> Data = {
+            try Data(contentsOf: $0, options: .mappedIfSafe)
+        }
     ) {
         precondition(cacheIdentityOverride?.isEmpty != true)
         self.environment = environment
@@ -75,13 +84,21 @@ actor ClaudeLogUsageScanner {
         self.cacheIdentityOverride = cacheIdentityOverride
         self.organizationID = organizationUUID?.lowercased()
         self.accountID = accountUUID?.lowercased()
+        self.additionalConfigDirectories = additionalConfigDirectories
         self.allowsUnattributedSessions = allowsUnattributedSessions
+        self.readOwnershipData = readOwnershipData
     }
 
     /// Scan the last `daysBack` days of Claude logs. Returns `nil` when no Claude data directory or
     /// no log files exist (the spend tiles then render "No data"); returns an empty series when logs
     /// exist but have no usage in the window.
     func scan(daysBack: Int = 30, now: Date = Date(), pricing: ModelPricing) async -> LogUsageScan? {
+        // A UUID-only default login still has a card, but cannot claim any organization's history
+        // once multiple identities are known. The unscoped single-account scanner remains unchanged.
+        if accountID != nil, organizationID == nil, !allowsUnattributedSessions {
+            AppLog.info(LogTag.plugin("claude"), "local spending excluded: default login has no organization and multiple accounts are known")
+            return nil
+        }
         let since = JSONLScanning.sinceDate(daysBack: daysBack, now: now)
         let cacheIdentity = parseCacheIdentity()
         let roots = claudeRoots()
@@ -142,7 +159,8 @@ actor ClaudeLogUsageScanner {
                 homeURL.appendingPathComponent(".claude"),
             ]
         }
-        let roots = Set(configuredRoots.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
+        let allRoots = configuredRoots + additionalConfigDirectories.map { URL(fileURLWithPath: expandHome($0)) }
+        let roots = Set(allRoots.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
             .sorted()
             .joined(separator: "\n")
         return "home=\(home)\nroots=\(roots)"
@@ -185,6 +203,10 @@ actor ClaudeLogUsageScanner {
                 ?? home.appendingPathComponent(".config")
             addIfValid(xdg.appendingPathComponent("claude"))
             addIfValid(home.appendingPathComponent(".claude"))
+        }
+
+        for directory in additionalConfigDirectories {
+            addIfValid(URL(fileURLWithPath: expandHome(directory)))
         }
 
         for sandbox in Self.coworkClaudeDirs(
@@ -255,6 +277,8 @@ actor ClaudeLogUsageScanner {
         var seenPaths: Set<String> = []
         var ownedFiles: [JSONLScanning.DiscoveredFile] = []
         var desktopSessionIDs: Set<String>?
+        // Optional values retain read failures for this pass without persisting them.
+        var identities: [String: ClaudeSessionIdentity?] = [:]
 
         for file in files {
             guard !Task.isCancelled else { return [] }
@@ -271,17 +295,15 @@ actor ClaudeLogUsageScanner {
                 continue
             }
 
-            let directory = URL(fileURLWithPath: file.path).deletingLastPathComponent()
-            let sessionFile: JSONLScanning.DiscoveredFile?
-            if directory.lastPathComponent == "subagents" {
-                let parentPath = directory.deletingLastPathComponent().appendingPathExtension("jsonl").path
-                sessionFile = filesByPath[parentPath]
-            } else {
-                sessionFile = file
+            let sessionFile = Self.owningSessionFile(for: file, filesByPath: filesByPath)
+            guard let sessionFile else { continue }
+            if identities[sessionFile.path] == nil {
+                identities[sessionFile.path] = .some(sessionIdentity(sessionFile))
             }
-            guard let sessionFile, let ownership = sessionIdentity(sessionFile) else { continue }
-            if let owner = ownership.organizationID {
-                if owner == organizationID, accountID == nil || ownership.accountID == accountID {
+            guard let result = identities[sessionFile.path], let ownership = result else { continue }
+            if case .conflicted = ownership { continue }
+            if case let .owned(owner, ownerAccount) = ownership {
+                if owner == organizationID, accountID == nil || ownerAccount == accountID {
                     ownedFiles.append(file)
                 }
             } else if allowsUnattributedSessions {
@@ -329,41 +351,22 @@ actor ClaudeLogUsageScanner {
 
     private func sessionIdentity(
         _ file: JSONLScanning.DiscoveredFile
-    ) -> (organizationID: String?, accountID: String?)? {
+    ) -> ClaudeSessionIdentity? {
         if let cached = sessionOwnership[file.path],
            cached.size == file.size, cached.mtime == file.mtime
         {
-            return (cached.organizationID, cached.accountID)
+            return cached.identity
         }
 
-        let data: Data
         do {
-            data = try Data(contentsOf: URL(fileURLWithPath: file.path), options: .mappedIfSafe)
+            let data = try readOwnershipData(URL(fileURLWithPath: file.path))
+            guard let identity = ClaudeSessionIdentity.parse(data), !Task.isCancelled else { return nil }
+            sessionOwnership[file.path] = (file.size, file.mtime, identity)
+            return identity
         } catch {
             AppLog.warn(LogTag.plugin("claude"), "Failed to read Claude session ownership from \(file.path): \(error)")
             return nil
         }
-
-        let marker = Data(#""ownerOrganizationUuid""#.utf8)
-        var owner: String?
-        var account: String?
-        for line in data.split(separator: UInt8(ascii: "\n")) where line.range(of: marker) != nil {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let value = object["ownerOrganizationUuid"] as? String,
-                  !value.isEmpty
-            else { continue }
-            let candidate = value.lowercased()
-            if let owner, owner != candidate { return nil }
-            owner = candidate
-            if let candidateAccount = object["ownerAccountUuid"] as? String, !candidateAccount.isEmpty {
-                let normalizedAccount = candidateAccount.lowercased()
-                if let account, account != normalizedAccount { return nil }
-                account = normalizedAccount
-            }
-        }
-
-        sessionOwnership[file.path] = (file.size, file.mtime, owner, account)
-        return (owner, account)
     }
 
     // MARK: - Line parsing
@@ -375,7 +378,6 @@ actor ClaudeLogUsageScanner {
         var entries: [Entry] = []
         for line in data.split(separator: UInt8(ascii: "\n")) {
             guard line.range(of: marker) != nil else { continue }
-            if hasUnsupportedNullField(line) { continue }
             entries.append(contentsOf: parseEntries(Data(line)))
         }
         return entries
@@ -397,6 +399,7 @@ actor ClaudeLogUsageScanner {
               let timestamp = OpenUsageISO8601.date(from: timestampRaw),
               let message = object["message"] as? [String: Any],
               let usage = message["usage"] as? [String: Any],
+              !hasUnsupportedNullField(object, message: message, usage: usage),
               let parsedUsage = tokenBreakdown(from: usage),
               isValidEntry(object, message: message)
         else { return [] }
@@ -498,36 +501,24 @@ actor ClaudeLogUsageScanner {
         return index < bytes.count && bytes[index].isASCIIDigit
     }
 
-    /// Claude never writes `null` into these fields; a line that does is a foreign/corrupt shape that
-    /// ccusage skips before JSON parsing, and we match it byte-for-byte.
-    static func hasUnsupportedNullField(_ line: Data.SubSequence) -> Bool {
-        let nullMarker = Data(":null".utf8)
-        let quote = UInt8(ascii: "\"")
-        let bytes = Data(line) // fresh copy → indices are 0-based
-        var offset = bytes.startIndex
-        while let markerRange = bytes.range(of: nullMarker, in: offset..<bytes.endIndex) {
-            let start = markerRange.lowerBound
-            var fieldEnd = start > 0 ? start - 1 : 0
-            if bytes[fieldEnd] != quote {
-                while fieldEnd > 0, bytes[fieldEnd] != quote { fieldEnd -= 1 }
-            }
-            if bytes[fieldEnd] == quote, fieldEnd > 0 {
-                var fieldStart = fieldEnd - 1
-                while fieldStart > 0, bytes[fieldStart] != quote { fieldStart -= 1 }
-                if bytes[fieldStart] == quote {
-                    let field = String(decoding: bytes[(fieldStart + 1)..<fieldEnd], as: UTF8.self)
-                    if Self.unsupportedNullableFields.contains(field) { return true }
-                }
-            }
-            offset = markerRange.upperBound
+    /// Claude never writes `null` into the schema fields we consume; a line that does is a
+    /// foreign/corrupt shape that ccusage skips. The check is scoped to the exact objects we read
+    /// (top level, `message`, `message.usage`) so unrelated nested keys sharing a name — such as
+    /// `usage.iterations[].model`, which Claude Code 2.1.270 writes as `null` for ordinary message
+    /// iterations — don't invalidate an otherwise valid record.
+    static func hasUnsupportedNullField(
+        _ object: [String: Any], message: [String: Any], usage: [String: Any]
+    ) -> Bool {
+        let levels: [([String: Any], [String])] = [
+            (object, ["cwd", "costUSD", "version", "sessionId", "requestId", "isApiErrorMessage"]),
+            (message, ["id", "model"]),
+            (usage, ["speed", "cache_read_input_tokens", "cache_creation_input_tokens"])
+        ]
+        for (container, fields) in levels {
+            for field in fields where container[field] is NSNull { return true }
         }
         return false
     }
-
-    private static let unsupportedNullableFields: Set<String> = [
-        "id", "cwd", "model", "speed", "costUSD", "version", "sessionId", "requestId",
-        "isApiErrorMessage", "cache_read_input_tokens", "cache_creation_input_tokens"
-    ]
 
     // MARK: - Deduplication
 

@@ -4,6 +4,8 @@ import Foundation
 /// `logs/unified.jsonl` is a capped debug log, so it cannot back historical spend or reliable model
 /// attribution. Session `updates.jsonl` files carry both per-model token counts and Grok's own costs.
 actor GrokLogUsageScanner {
+    private static let maximumPlausibleTokens = 1_000_000_000_000
+
     private let environment: EnvironmentReading
     private let homeDirectory: @Sendable () -> URL
     private let scanner: IncrementalJSONLScanner<Entry>
@@ -43,8 +45,10 @@ actor GrokLogUsageScanner {
         let directory = grokHome().appendingPathComponent("sessions", isDirectory: true)
         let identity = directory.resolvingSymlinksInPath().standardizedFileURL.path
         let since = JSONLScanning.sinceDate(daysBack: daysBack, now: now)
+        // Child sessions can contain usage absent from their coordinator. Include every ledger;
+        // dedup below removes replayed events by event ID and model, not by session kind or totals.
         let files = JSONLScanning.jsonlFiles(under: directory)
-            .filter(Self.isCoordinatorSession)
+            .filter { URL(fileURLWithPath: $0.path).lastPathComponent == "updates.jsonl" }
 
         guard !files.isEmpty else {
             _ = await scanner.items(from: [], since: since, cacheIdentity: identity, parse: Self.parseFile)
@@ -66,29 +70,6 @@ actor GrokLogUsageScanner {
             return URL(fileURLWithPath: expandHome(raw))
         }
         return homeDirectory().appendingPathComponent(".grok", isDirectory: true)
-    }
-
-    /// Coordinator turns already include their subagents, so reading both ledgers would charge every
-    /// child task twice. Older sessions without a summary remain eligible because their kind is unknown.
-    private static func isCoordinatorSession(_ file: JSONLScanning.DiscoveredFile) -> Bool {
-        let fileURL = URL(fileURLWithPath: file.path)
-        guard fileURL.lastPathComponent == "updates.jsonl" else { return false }
-
-        let summaryURL = fileURL.deletingLastPathComponent().appendingPathComponent("summary.json")
-        guard FileManager.default.fileExists(atPath: summaryURL.path) else { return true }
-
-        do {
-            let data = try Data(contentsOf: summaryURL)
-            guard let summary = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                AppLog.warn(LogTag.plugin("grok"), "Session summary is not a JSON object; skipped session")
-                return false
-            }
-            guard let kind = summary["session_kind"] as? String else { return true }
-            return !kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("subagent")
-        } catch {
-            AppLog.warn(LogTag.plugin("grok"), "Could not read session summary; skipped session: \(error.localizedDescription)")
-            return false
-        }
     }
 
     // MARK: - Session parsing
@@ -128,14 +109,14 @@ actor GrokLogUsageScanner {
                   inputValue >= 0
             else { continue }
 
-            let input = Int(inputValue)
-            let cacheRead = min(max(Int(ProviderParse.number(values["cachedReadTokens"]) ?? 0), 0), input)
+            let input = Self.boundedTokenCount(inputValue)
+            let cacheRead = min(Self.boundedTokenCount(values["cachedReadTokens"]), input)
             let cacheWrite = min(
-                max(Int(ProviderParse.number(values["cacheCreationTokens"]) ?? 0), 0),
+                Self.boundedTokenCount(values["cacheCreationTokens"]),
                 input - cacheRead
             )
             // Grok reports reasoning as a subset of outputTokens, so it must never be added again.
-            let output = max(Int(ProviderParse.number(values["outputTokens"]) ?? 0), 0)
+            let output = Self.boundedTokenCount(values["outputTokens"])
             let ticks = ProviderParse.number(values["costUsdTicks"])
                 ?? (modelUsage.count == 1 ? topLevelTicks : nil)
             let carriedCost = ticks.flatMap { $0 >= 0 ? $0 / 10_000_000_000 : nil }
@@ -154,6 +135,16 @@ actor GrokLogUsageScanner {
             ))
         }
         return entries
+    }
+
+    /// External JSON numbers can exceed `Int.max`; cap corrupt counts before conversion or aggregation.
+    private static func boundedTokenCount(_ value: Any?) -> Int {
+        guard let number = ProviderParse.number(value), number > 0 else { return 0 }
+        if number > Double(maximumPlausibleTokens) {
+            AppLog.warn(LogTag.plugin("grok"), "Clamped an implausible token count in a Grok session transcript")
+            return maximumPlausibleTokens
+        }
+        return Int(number)
     }
 
     private static func timestamp(in object: [String: Any], params: [String: Any]?) -> Date? {

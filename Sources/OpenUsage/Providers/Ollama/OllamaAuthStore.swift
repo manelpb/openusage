@@ -1,87 +1,69 @@
 import Foundation
 
-struct OllamaSessionCookie: Hashable, Sendable {
-    var value: String
-    var source: String
+/// The ed25519 keypair the `ollama` CLI/app generates at `~/.ollama/id_ed25519` on first run and links
+/// to an ollama.com account on `ollama signin`. It is the whole Ollama Cloud credential: there is no
+/// token or API key to read, so requests are signed with it (see `OllamaRequestSigner`).
+///
+/// `seed` is secret key material. It lives in memory for the duration of a refresh and is never logged,
+/// cached, or written anywhere — which is also why this type is deliberately not `CustomStringConvertible`
+/// and not part of any snapshot.
+struct OllamaSigningKey: Sendable {
+    /// Base64 of the SSH wire-format public key (the `AAAAC3Nz…` body of `id_ed25519.pub`). ollama.com
+    /// identifies the account by this value and verifies the signature against it.
+    let publicKeyBase64: String
+    /// The 32-byte ed25519 seed.
+    let seed: Data
 }
 
 enum OllamaAuthError: Error, LocalizedError, Equatable {
-    case missingSession
-    case sessionExpired
-    case missingAPIKey
-    case invalidAPIKey
+    /// No `~/.ollama/id_ed25519` — Ollama has never run on this Mac.
+    case missingKey
+    /// The key file exists but could not be read (permissions, unreadable storage).
+    case keyUnreadable
+    /// The key file exists but is not an unencrypted OpenSSH ed25519 key.
+    case invalidKey
+    /// The key is valid but ollama.com does not associate it with an account.
+    case notSignedIn
 
     var errorDescription: String? {
         switch self {
-        case .missingSession:
-            return "No Ollama session. Set OLLAMA_SESSION_COOKIE or sign in with your browser."
-        case .sessionExpired:
-            return "Ollama session expired. Update your session cookie."
-        case .missingAPIKey:
-            return "No Ollama API key. Set OLLAMA_API_KEY."
-        case .invalidAPIKey:
-            return "Ollama API key invalid."
+        case .missingKey:
+            return "No Ollama key found. Install Ollama and run `ollama signin` to track cloud usage."
+        case .keyUnreadable:
+            return "Couldn't read ~/.ollama/id_ed25519. Check the file's permissions."
+        case .invalidKey:
+            return "~/.ollama/id_ed25519 isn't a usable Ollama signing key."
+        case .notSignedIn:
+            return "Not signed in to Ollama Cloud. Run `ollama signin` to see usage."
         }
     }
 }
 
+/// Reads the Ollama signing key already on the machine. Nothing is ever asked of the user: if `ollama`
+/// has run here, the key exists, and if the user has signed in, ollama.com accepts it.
 struct OllamaAuthStore: Sendable {
-    static let sessionCookieName = "__Secure-session"
-    static let keychainSessionService = "OpenUsage Ollama Session"
-    static let keychainCookieService = "OpenUsage Ollama Cookie"
+    /// Where the `ollama` CLI and the desktop app both keep the key.
+    static let keyPath = "~/.ollama/id_ed25519"
 
-    var keychain: KeychainAccessing
-    var environment: EnvironmentReading
+    private let files: any TextFileAccessing
 
-    init(
-        keychain: KeychainAccessing = SecurityKeychainAccessor(),
-        environment: EnvironmentReading = ProcessEnvironmentReader()
-    ) {
-        self.keychain = keychain
-        self.environment = environment
+    init(files: any TextFileAccessing = LocalTextFileAccessor()) {
+        self.files = files
     }
 
-    func loadSessionCookie() -> OllamaSessionCookie? {
-        if let envSession = extractCookie(from: environment.value(for: "OLLAMA_SESSION_COOKIE")) {
-            return OllamaSessionCookie(value: envSession, source: "OLLAMA_SESSION_COOKIE")
+    /// The parsed signing key, or `nil` when Ollama isn't installed here. Throws when the file exists
+    /// but can't be read or parsed, so a broken install never reads as a plain logout.
+    func loadSigningKey() throws -> OllamaSigningKey? {
+        let pem: String?
+        do {
+            pem = try files.readTextIfPresent(Self.keyPath)
+        } catch {
+            throw OllamaAuthError.keyUnreadable
         }
-        if let envCookie = extractCookie(from: environment.value(for: "OLLAMA_COOKIE")) {
-            return OllamaSessionCookie(value: envCookie, source: "OLLAMA_COOKIE")
+        guard let pem, !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard let key = OpenSSHEd25519Key.parse(pem: pem) else {
+            throw OllamaAuthError.invalidKey
         }
-        if let keychainSession = extractCookie(from: try? keychain.readGenericPasswordForCurrentUser(service: Self.keychainSessionService)) {
-            return OllamaSessionCookie(value: keychainSession, source: "keychain")
-        }
-        if let keychainCookie = extractCookie(from: try? keychain.readGenericPasswordForCurrentUser(service: Self.keychainCookieService)) {
-            return OllamaSessionCookie(value: keychainCookie, source: "keychain")
-        }
-        return nil
-    }
-
-    func saveSessionCookieToKeychain(_ cookie: OllamaSessionCookie) throws {
-        try keychain.writeGenericPasswordForCurrentUser(
-            service: Self.keychainSessionService,
-            value: cookie.value
-        )
-    }
-
-    func loadAPIKey() -> String? {
-        environment.value(for: "OLLAMA_API_KEY")?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-    }
-
-    private func extractCookie(from raw: String?) -> String? {
-        guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else { return nil }
-        let header = text.replacing(/^Cookie:\s*/, with: "")
-        let parts = header.components(separatedBy: ";")
-        for part in parts {
-            let trimmed = part.trimmingCharacters(in: .whitespaces)
-            let eq = trimmed.firstIndex(of: "=")
-            guard let eq else { continue }
-            let name = String(trimmed[..<eq]).trimmingCharacters(in: .whitespaces)
-            if name == Self.sessionCookieName {
-                return String(trimmed[trimmed.index(after: eq)...]).trimmingCharacters(in: .whitespaces).nilIfEmpty
-            }
-        }
-        if !header.contains(";") { return header }
-        return nil
+        return key
     }
 }

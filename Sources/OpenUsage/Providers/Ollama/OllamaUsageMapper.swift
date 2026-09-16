@@ -1,180 +1,92 @@
 import Foundation
 
-struct OllamaUsageData: Sendable, Equatable {
-    var plan: String?
-    var sessionPercent: Double
-    var weeklyPercent: Double
-    var sessionResetsAt: Date?
-    var weeklyResetsAt: Date?
-    var source: String
-}
-
+/// Builds metric lines from the ollama.com `/api/usage` payload and the plan name from `/api/me`.
+///
+/// The usage payload looks like:
+///
+///     {"activity": {"cost": "0.00000", "period": {"type": "last_4_weeks", …}, "models": []},
+///      "limits": {"session": {"usage": 0.349, "models": […]},
+///                 "weekly":  {"usage": 0.316, "models": […]}}}
+///
+/// `usage` is a **fraction** of the plan's allowance (0.349 → 34.9%), not a percentage.
+///
+/// Neither limit carries a reset instant. Ollama documents the window *lengths* (session every 5 hours,
+/// weekly every 7 days) but not when the current window started, so the meters deliberately carry no
+/// `resetsAt` and no `periodDurationMs`: a period with no reset date renders as a flat "Resets in 5h"
+/// that never counts down, which reads as a real countdown while being pure guesswork. The window
+/// lengths live in `docs/providers/ollama.md` instead, where they can be stated as cadence.
+///
+/// The endpoint is undocumented (it backs Ollama's own settings page), so every field is read
+/// defensively: a limit that isn't present is simply not metered, rather than shown as zero usage.
+/// The mapper is pure — no I/O — so it tests directly against sample payloads.
 enum OllamaUsageMapper {
-    static let sessionMs = 5 * 60 * 60 * 1000
-    static let weekMs = 7 * 24 * 60 * 60 * 1000
-
-    static func parseAPIUsage(_ data: Data) -> OllamaUsageData? {
-        guard let json = ProviderParse.jsonObject(data) else { return nil }
-        let body = (json["data"] as? [String: Any]) ?? json
-
-        let session = nestedObject(body, keys: ["session", "session_usage", "sessionUsage"])
-        let weekly = nestedObject(body, keys: ["weekly", "weekly_usage", "weeklyUsage"])
-
-        let sessionPercent = clampPercent(
-            session?["used_percent"] ?? session?["usedPercent"] ?? session?["percent"] ?? session?["percentage"]
-            ?? body["session_percent"] ?? body["sessionPercent"]
-        )
-        let weeklyPercent = clampPercent(
-            weekly?["used_percent"] ?? weekly?["usedPercent"] ?? weekly?["percent"] ?? weekly?["percentage"]
-            ?? body["weekly_percent"] ?? body["weeklyPercent"]
-        )
-
-        guard let sessionPercent, let weeklyPercent else { return nil }
-
-        return OllamaUsageData(
-            plan: (body["plan"] ?? body["tier"] ?? body["subscription"]).flatMap { ($0 as? String)?.nilIfEmpty },
-            sessionPercent: sessionPercent,
-            weeklyPercent: weeklyPercent,
-            sessionResetsAt: (session?["resets_at"] ?? session?["resetsAt"] ?? body["session_resets_at"]).flatMap { ($0 as? String).flatMap(OpenUsageISO8601.date) },
-            weeklyResetsAt: (weekly?["resets_at"] ?? weekly?["resetsAt"] ?? body["weekly_resets_at"]).flatMap { ($0 as? String).flatMap(OpenUsageISO8601.date) },
-            source: "API"
-        )
+    /// `(plan, lines)` from the usage payload plus the optional account payload. `accountBody` may be
+    /// `nil` — the plan request is best-effort and must never blank out the meters.
+    static func map(usageBody: Data, accountBody: Data?) throws -> (plan: String?, lines: [MetricLine]) {
+        let plan = accountBody.flatMap { planName(from: $0) }
+        return (plan, try usageLines(usageBody))
     }
 
-    static func parseSettingsText(_ text: String, now: Date) -> OllamaUsageData? {
-        let percentages = extractPercentages(text)
-        AppLog.info(.refresh, "ollama parse: found \(percentages.count) percentages: \(percentages)")
-
-        guard let sessionStart = text.range(of: "Session usage", options: .caseInsensitive) else { return nil }
-        let afterSession = String(text[sessionStart.lowerBound...])
-
-        guard let weeklyStart = afterSession.range(of: "Weekly usage", options: .caseInsensitive) else { return nil }
-        let sessionSection = String(afterSession[..<weeklyStart.lowerBound])
-        let weeklySection = String(afterSession[weeklyStart.lowerBound...])
-
-        AppLog.info(.refresh, "ollama parse: sessionSection=\(sessionSection.prefix(200))")
-        AppLog.info(.refresh, "ollama parse: weeklySection=\(weeklySection.prefix(200))")
-
-        let sessionPercent: Double
-        let weeklyPercent: Double
-
-        if percentages.count >= 2 {
-            sessionPercent = percentages[0] ?? 0
-            weeklyPercent = percentages[1] ?? 0
-        } else if percentages.count == 1 {
-            if sessionSection.contains("%") {
-                sessionPercent = percentages[0] ?? 0
-                weeklyPercent = 0
-                AppLog.info(.refresh, "ollama parse: assign to session (section has %)")
-            } else {
-                // Single percentage in weekly section means session is blocked (weekly limit reached).
-                // Show session as 100% used so "remaining" mode shows 0% left — accurate since
-                // the user can't start new sessions.
-                sessionPercent = 100
-                weeklyPercent = percentages[0] ?? 0
-                AppLog.info(.refresh, "ollama parse: assign to weekly, session blocked (100% used)")
-            }
-        } else {
-            return nil
+    /// Session + weekly meters and the recent-activity spend row.
+    static func usageLines(_ body: Data) throws -> [MetricLine] {
+        guard let root = ProviderParse.jsonObject(body) else {
+            throw OllamaUsageError.invalidResponse
+        }
+        // `limits` is the reason this endpoint exists; its absence means the response isn't the shape
+        // OpenUsage understands, which is a loud failure rather than an empty dashboard.
+        guard let limits = root["limits"] as? [String: Any] else {
+            throw OllamaUsageError.invalidResponse
         }
 
-        let sessionResetsAt = extractSessionReset(sessionSection, now: now) ?? extractRelativeReset(sessionSection, now: now)
-        let weeklyResetsAt = extractRelativeReset(weeklySection, now: now)
+        var lines: [MetricLine] = []
+        if let session = percentLine(limits["session"], label: "Session") {
+            lines.append(session)
+        }
+        if let weekly = percentLine(limits["weekly"], label: "Weekly") {
+            lines.append(weekly)
+        }
+        if let activity = activityLine(root["activity"]) {
+            lines.append(activity)
+        }
+        return lines.isEmpty ? [.noUsageData] : lines
+    }
 
-        AppLog.info(.refresh, "ollama parse: session=\(sessionPercent)% resets=\(String(describing: sessionResetsAt)), weekly=\(weeklyPercent)% resets=\(String(describing: weeklyResetsAt))")
+    /// The account's plan, title-cased for the header badge ("pro" → "Pro"). Called directly, ollama.com
+    /// capitalizes its JSON keys (`Plan`); the local Ollama server lowercases them when it proxies the
+    /// same response, so both spellings are accepted.
+    static func planName(from body: Data) -> String? {
+        guard let root = ProviderParse.jsonObject(body) else { return nil }
+        let raw = (root["Plan"] as? String) ?? (root["plan"] as? String)
+        guard let name = raw?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else { return nil }
+        return name.capitalized
+    }
 
-        return OllamaUsageData(
-            plan: nil,
-            sessionPercent: sessionPercent,
-            weeklyPercent: weeklyPercent,
-            sessionResetsAt: sessionResetsAt,
-            weeklyResetsAt: weeklyResetsAt,
-            source: "settings"
+    // MARK: - Private
+
+    /// One limit entry → a 0–100% meter. `usage` is a fraction of the plan allowance, so it scales by 100.
+    /// A missing entry or a missing `usage` yields no line: the meter is absent, not at zero.
+    private static func percentLine(_ entry: Any?, label: String) -> MetricLine? {
+        guard let entry = entry as? [String: Any],
+              let fraction = ProviderParse.number(entry["usage"]) else { return nil }
+        return .progress(
+            label: label,
+            used: ProviderParse.clampPercent(fraction * 100),
+            limit: 100,
+            format: .percent
         )
     }
 
-    private static func extractSessionReset(_ text: String, now: Date) -> Date? {
-        let pattern = try! NSRegularExpression(pattern: #"Sessions resume in\s+(\d+)\s*(day|days|hour|hours|minute|minutes)"#, options: .caseInsensitive)
-        let range = NSRange(text.startIndex..., in: text)
-        guard let match = pattern.firstMatch(in: text, range: range) else { return nil }
-        let nsText = text as NSString
-        let amountStr = nsText.substring(with: match.range(at: 1))
-        let unit = nsText.substring(with: match.range(at: 2)).lowercased()
-        guard let amount = Double(amountStr) else { return nil }
-        let factor: Double
-        if unit.hasPrefix("minute") { factor = 60 }
-        else if unit.hasPrefix("hour") { factor = 3600 }
-        else { factor = 86400 }
-        return now.addingTimeInterval(amount * factor)
-    }
-
-    private static func extractRelativeReset(_ text: String, now: Date) -> Date? {
-        let pattern = try! NSRegularExpression(pattern: #"Resets in\s+(?:less than\s+)?(\d+(?:\.\d+)?)\s*(second|seconds|minute|minutes|min|m|hour|hours|h|day|days|d|week|weeks|w)"#, options: .caseInsensitive)
-        let range = NSRange(text.startIndex..., in: text)
-        guard let match = pattern.firstMatch(in: text, range: range) else { return nil }
-        let nsText = text as NSString
-        let amountStr = nsText.substring(with: match.range(at: 1))
-        let unit = nsText.substring(with: match.range(at: 2)).lowercased()
-        guard let amount = Double(amountStr), amount >= 0 else { return nil }
-        let factor: Double
-        if unit.hasPrefix("second") || unit == "s" { factor = 1 }
-        else if unit.hasPrefix("minute") || unit == "min" || unit == "m" { factor = 60 }
-        else if unit.hasPrefix("hour") || unit == "h" { factor = 3600 }
-        else if unit.hasPrefix("day") || unit == "d" { factor = 86400 }
-        else if unit.hasPrefix("week") || unit == "w" { factor = 604800 }
-        else { return nil }
-        return now.addingTimeInterval(amount * factor)
-    }
-
-    static func buildLines(from data: OllamaUsageData) -> [MetricLine] {
-        [
-            .progress(
-                label: "Session",
-                used: data.sessionPercent,
-                limit: 100,
-                format: .percent,
-                resetsAt: data.sessionResetsAt,
-                periodDurationMs: sessionMs
-            ),
-            .progress(
-                label: "Weekly",
-                used: data.weeklyPercent,
-                limit: 100,
-                format: .percent,
-                resetsAt: data.weeklyResetsAt,
-                periodDurationMs: weekMs
-            )
-        ]
-    }
-
-    // MARK: - Helpers
-
-    private static func nestedObject(_ dict: [String: Any], keys: [String]) -> [String: Any]? {
-        for key in keys {
-            if let value = dict[key] as? [String: Any] { return value }
-        }
-        return nil
-    }
-
-    private static func clampPercent(_ value: Any?) -> Double? {
-        let n: Double?
-        if let d = value as? Double { n = d }
-        else if let s = value as? String { n = Double(s) }
-        else { return nil }
-        guard let n, n.isFinite else { return nil }
-        return max(0, min(100, n))
-    }
-
-    private static func extractPercentages(_ text: String) -> [Double?] {
-        var results: [Double?] = []
-        let regex = try! NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)%\s*used"#, options: .caseInsensitive)
-        let range = NSRange(text.startIndex..., in: text)
-        regex.enumerateMatches(in: text, range: range) { match, _, stop in
-            guard results.count < 2, let match else { return }
-            let nsText = text as NSString
-            let numStr = nsText.substring(with: match.range(at: 1))
-            results.append(Double(numStr))
-        }
-        return results
+    /// `activity.cost` → an unbounded dollar row. Ollama reports it as a decimal string ("0.00000") over
+    /// a rolling four-week window; it stays $0.00 on a subscription and carries real spend for
+    /// pay-as-you-go and API-key usage. The label is fixed so it always matches its widget descriptor —
+    /// `activity.period` is informational and is not used to rename the row.
+    private static func activityLine(_ activity: Any?) -> MetricLine? {
+        guard let activity = activity as? [String: Any],
+              let cost = ProviderParse.number(activity["cost"]),
+              cost >= 0 else { return nil }
+        return .values(
+            label: "Last 4 Weeks",
+            values: [MetricValue(number: cost, kind: .dollars)]
+        )
     }
 }

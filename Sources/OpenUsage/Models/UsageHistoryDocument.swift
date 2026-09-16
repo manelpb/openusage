@@ -10,7 +10,7 @@ struct UsageHistoryDocument: Hashable, Sendable, Codable, Identifiable {
     var deviceName: String
     var updatedAt: Date
     var providers: [String: ProviderUsageHistory]
-    /// Claude card ownership, when known. Older clients ignore this optional v1 field.
+    /// Account card ownership, when known. Older clients ignore this optional v1 field.
     var identities: [String: String]? = nil
 
     var id: String { deviceID }
@@ -36,13 +36,14 @@ struct UsageHistoryDocument: Hashable, Sendable, Codable, Identifiable {
 
         var seenIdentities = Set<String>()
         for (providerID, identity) in identities ?? [:] {
+            let family = ProviderAccountID.family(of: providerID)
             guard providers[providerID] != nil,
-                  ProviderAccountID.family(of: providerID) == "claude",
+                  ProviderAccountID.families.contains(family),
                   !identity.isEmpty,
                   identity.rangeOfCharacter(from: .whitespacesAndNewlines.union(.controlCharacters)) == nil,
                   !identity.contains("/"), !identity.contains("\\")
             else { throw UsageHistoryDocumentError.invalidIdentity(providerID) }
-            guard seenIdentities.insert(identity.lowercased()).inserted else {
+            guard seenIdentities.insert("\(family):\(identity.lowercased())").inserted else {
                 throw UsageHistoryDocumentError.duplicateIdentity(providerID)
             }
         }
@@ -55,7 +56,7 @@ struct UsageHistoryDocument: Hashable, Sendable, Codable, Identifiable {
                 throw UsageHistoryDocumentError.invalidProvider(providerID)
             }
             if providerID.contains("@") {
-                guard ProviderAccountID.family(of: providerID) == "claude",
+                guard ProviderAccountID.families.contains(ProviderAccountID.family(of: providerID)),
                       identities?[providerID] != nil
                 else { throw UsageHistoryDocumentError.invalidIdentity(providerID) }
             }
@@ -143,8 +144,8 @@ enum UsageHistoryDocumentError: Error, LocalizedError, Equatable {
         case .unsupportedSchema: "This Mac wrote a newer usage-history format. Update OpenUsage."
         case .invalidDevice: "The synced Mac identity is invalid."
         case .invalidProvider: "The synced provider identifier is invalid."
-        case .invalidIdentity: "The synced Claude account identity is invalid."
-        case .duplicateIdentity: "The synced Claude account appears more than once."
+        case .invalidIdentity: "The synced account identity is invalid."
+        case .duplicateIdentity: "The synced account appears more than once."
         case .invalidDay: "The synced history contains an invalid date."
         case .duplicateDay: "The synced history contains the same date more than once."
         case .duplicateModel: "The synced history contains the same model more than once."

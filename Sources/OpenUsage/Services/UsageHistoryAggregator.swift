@@ -24,11 +24,17 @@ enum UsageHistoryAggregator {
             for document in peerDocuments {
                 let peer: ProviderUsageHistory?
                 if ProviderAccountID.family(of: providerID) == "claude" {
-                    peer = claudeHistory(
+                    peer = accountHistory(
                         in: document,
-                        providerID: providerID,
+                        family: "claude",
                         identity: providerIdentityKeys[providerID],
                         allowsUnattributedHistory: localClaudeCards.count <= 1
+                    )
+                } else if ProviderAccountID.family(of: providerID) == "codex",
+                          providerIdentityKeys[providerID]?.contains("|") == true || providerID.contains("@") {
+                    peer = accountHistory(
+                        in: document, family: "codex", identity: providerIdentityKeys[providerID],
+                        allowsUnattributedHistory: false
                     )
                 } else {
                     peer = document.providers[providerID]
@@ -42,18 +48,19 @@ enum UsageHistoryAggregator {
         return inputs.mapValues { merge($0, includedDays: includedDays) }
     }
 
-    private static func claudeHistory(
+    private static func accountHistory(
         in document: UsageHistoryDocument,
-        providerID: String,
+        family: String,
         identity: String?,
         allowsUnattributedHistory: Bool
     ) -> ProviderUsageHistory? {
+        if family == "codex", !CodexAccountIdentity.isComplete(key: identity ?? "") { return nil }
         if let identities = document.identities,
-           identities.keys.contains(where: { ProviderAccountID.family(of: $0) == "claude" })
+           identities.keys.contains(where: { ProviderAccountID.family(of: $0) == family })
         {
             guard let identity,
                   let matchingID = identities.first(where: {
-                      ProviderAccountID.family(of: $0.key) == "claude"
+                      ProviderAccountID.family(of: $0.key) == family
                           && $0.value.caseInsensitiveCompare(identity) == .orderedSame
                   })?.key
             else { return nil }
@@ -63,7 +70,7 @@ enum UsageHistoryAggregator {
         guard document.schema == UsageHistoryDocument.currentSchema,
               allowsUnattributedHistory
         else { return nil }
-        return document.providers["claude"]
+        return document.providers[family]
     }
 
     private static func merge(
@@ -73,9 +80,13 @@ enum UsageHistoryAggregator {
         var days: [String: (tokens: Int, cost: Double?, sawCost: Bool)] = [:]
         var models: [String: [String: ModelAccumulator]] = [:]
         var unknown: [String: Set<String>] = [:]
+        var fallbackModelsByDay: [String: Set<String>] = [:]
 
         for history in histories {
             for day in history.series.daily where includedDays.contains(day.date) {
+                if let fallbackModels = history.fallbackPricingModelsByDay?[day.date] {
+                    fallbackModelsByDay[day.date, default: []].formUnion(fallbackModels)
+                }
                 var value = days[day.date] ?? (0, nil, false)
                 value.tokens += day.totalTokens
                 if let cost = day.costUSD {
@@ -113,7 +124,8 @@ enum UsageHistoryAggregator {
         return ProviderUsageHistory(
             series: series,
             modelUsage: modelDays.isEmpty ? nil : ModelUsageSeries(daily: modelDays),
-            unknownModelsByDay: unknown
+            unknownModelsByDay: unknown,
+            fallbackPricingModelsByDay: fallbackModelsByDay.isEmpty ? nil : fallbackModelsByDay
         )
     }
 
@@ -172,6 +184,13 @@ enum UsageHistoryAggregator {
 enum UsageHistorySnapshotRenderer {
     private static let historyLabels: Set<String> = ["Today", "Yesterday", "Last 30 Days", "Usage Trend"]
 
+    static func removingHistory(from snapshot: ProviderSnapshot) -> ProviderSnapshot {
+        var result = snapshot
+        result.usageHistory = nil
+        result.lines.removeAll { historyLabels.contains($0.label) }
+        return result
+    }
+
     static func render(
         local snapshot: ProviderSnapshot,
         history: ProviderUsageHistory,
@@ -181,7 +200,7 @@ enum UsageHistorySnapshotRenderer {
     ) -> ProviderSnapshot {
         var result = snapshot
         result.lines.removeAll { historyLabels.contains($0.label) }
-        let sourceNote = combined ? "Across your Macs · \(descriptor.sourceNote)" : descriptor.sourceNote
+        let baseNote = combined ? "Across your Macs · \(descriptor.sourceNote)" : descriptor.sourceNote
         SpendTileMapper.appendTokenUsage(
             history.series,
             to: &result.lines,
@@ -189,13 +208,15 @@ enum UsageHistorySnapshotRenderer {
             estimated: descriptor.estimatedCost,
             unknownModelsByDay: history.unknownModelsByDay,
             modelUsage: history.modelUsage,
-            modelSourceNote: sourceNote
+            modelSourceNote: baseNote,
+            fallbackPricingModelsByDay: history.fallbackPricingModelsByDay
         )
         SpendTileMapper.appendUsageTrend(
             history.series,
             to: &result.lines,
             now: now,
-            note: sourceNote
+            note: baseNote,
+            fallbackPricingModelsByDay: history.fallbackPricingModelsByDay
         )
         return result
     }
