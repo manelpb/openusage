@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds OpenUsage, stages a signed .app bundle under dist/, and launches it in place — no install
-# to /Applications. The dev build:
+# Builds OpenUsage, stages a signed .app bundle under dist/, and launches it in place. `run` and the
+# other modes never touch /Applications; `install` replaces /Applications/OpenUsage.app with the fresh
+# signed bundle. The dev build:
 #   - is signed with a stable Apple Development identity, so keychain/permission grants stick across
 #     rebuilds (macOS keys those to the signing identity + bundle id, not the install location);
 #   - uses its own bundle id (com.robinebers.openusage.dev), so it never touches the real installed
@@ -11,11 +12,12 @@ set -euo pipefail
 #   - ships no Sparkle feed, so it never checks for or installs updates (test updates with a real
 #     signed + notarized release build — that's the only honest way).
 #
-# Usage: script/build_and_run.sh [run|build|logs|verify]
+# Usage: script/build_and_run.sh [run|build|install|logs|verify]
 # Env:   CODESIGN_IDENTITY  override signing identity (exact name or hash)
 #        CONFIG             "release" (default) or "debug"
 #        ICLOUD_PROVISIONING_PROFILE  optional override for the development provisioning profile;
 #                         otherwise the newest matching installed profile is selected automatically
+#        INSTALL_DIR        where the `install` mode puts the bundle (default: /Applications)
 
 MODE="${1:-run}"
 CONFIG="${CONFIG:-release}"
@@ -24,6 +26,7 @@ TARGET_NAME="OpenUsage"                 # SwiftPM target / binary name
 APP_DISPLAY="OpenUsage"                 # user-facing app name
 BUNDLE_ID="${BUNDLE_ID:-com.robinebers.openusage.dev}"
 ICLOUD_CONTAINER_ID="iCloud.com.robinebers.openusage.dev"
+INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 MIN_SYSTEM_VERSION="15.0"
 # Dev builds derive the version from the nearest reachable git tag (upstream's release tags come in
 # with every merge), plus the fork's own commit, so a build is traceable to an exact revision. Falls
@@ -35,6 +38,7 @@ APP_BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 0)"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_DISPLAY.app"
+APP_INSTALL="$INSTALL_DIR/$APP_DISPLAY.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_HELPERS="$APP_CONTENTS/Helpers"
@@ -226,6 +230,18 @@ case "$MODE" in
   build)
     : # build + stage + sign only
     ;;
+  install)
+    # Copy to a sibling and verify there, so a bad copy or a broken signature can never leave the
+    # installed app missing or corrupt — the swap below only runs once the copy checks out.
+    STAGING="$INSTALL_DIR/.$APP_DISPLAY.app.installing"
+    rm -rf "$STAGING"
+    /usr/bin/ditto "$APP_BUNDLE" "$STAGING"
+    /usr/bin/codesign --verify --deep --strict "$STAGING"
+    rm -rf "$APP_INSTALL"
+    mv "$STAGING" "$APP_INSTALL"
+    /usr/bin/open -n "$APP_INSTALL"
+    echo "==> installed and launched $APP_DISPLAY ($APP_INSTALL)"
+    ;;
   logs)
     launch_app
     /usr/bin/log stream --info --style compact --predicate "process == \"$TARGET_NAME\""
@@ -236,7 +252,7 @@ case "$MODE" in
     pgrep -x "$TARGET_NAME" >/dev/null && echo "==> running"
     ;;
   *)
-    echo "usage: $0 [run|build|logs|verify]" >&2
+    echo "usage: $0 [run|build|install|logs|verify]" >&2
     exit 2
     ;;
 esac
