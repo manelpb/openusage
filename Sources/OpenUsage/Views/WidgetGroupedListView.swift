@@ -16,6 +16,10 @@ struct WidgetGroupedListView: View {
     @Environment(\.colorScheme) private var colorScheme
     let reorderSpaceName: String
     @Binding var reorderLift: ReorderLift?
+    /// Invoked with a provider ID when its header's Sign In button is tapped. Only providers that opt
+    /// into `supportsInAppSignIn` render the button (Ollama today), and it is hidden while a web session
+    /// is already stored (see `ProviderRuntime.hasStoredWebSession()`).
+    var onSignIn: ((String) -> Void)?
 
     @State private var frameStore = ReorderFrameStore()
     @State private var activeProviderID: String?
@@ -53,7 +57,10 @@ struct WidgetGroupedListView: View {
             warning: dataStore.headerNotice(for: group.provider.id),
             refreshing: dataStore.refreshingProviderIDs.contains(group.provider.id),
             staleness: dataStore.stalenessHint(for: group.provider.id),
-            onCopyScreenshot: { shareCard(group) }
+            onCopyScreenshot: { shareCard(group) },
+            onSignIn: group.provider.supportsInAppSignIn && !container.hasStoredWebSession(for: group.provider.id)
+                ? onSignIn.map { callback in { callback(group.provider.id) } }
+                : nil
         )
         // Keep the provider mark and hover-revealed copy control aligned with the card's content edges.
         .padding(.horizontal, 8)

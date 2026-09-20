@@ -229,6 +229,12 @@ final class AppContainer {
         shellEnvironmentSnapshotTask.cancel()
     }
 
+    /// Whether the provider with `providerID` already has a stored web session, so the dashboard header
+    /// can hide its in-app Sign In button while the user is signed in (Ollama today).
+    func hasStoredWebSession(for providerID: String) -> Bool {
+        providers.first { $0.provider.id == providerID }?.hasStoredWebSession() ?? false
+    }
+
     /// Re-runs first-launch credential detection on demand — the enablement half of the Customize
     /// "Reset All" action (`LayoutStore.resetToDefault` handles metrics, order, pins, and expansion).
     /// Delegates to `FirstRunSeeder.reseed`; returns its detection task so callers can await it.

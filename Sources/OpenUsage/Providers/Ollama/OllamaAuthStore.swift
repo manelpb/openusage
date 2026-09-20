@@ -44,11 +44,32 @@ enum OllamaAuthError: Error, LocalizedError, Equatable {
 struct OllamaAuthStore: Sendable {
     /// Where the `ollama` CLI and the desktop app both keep the key.
     static let keyPath = "~/.ollama/id_ed25519"
+    /// Keychain service for the ollama.com web session cookie captured from the user's browser. It is
+    /// optional — the signed API already supplies the meters — and only unlocks the reset instants.
+    static let keychainSessionService = "OpenUsage Ollama Session"
 
     private let files: any TextFileAccessing
+    private let keychain: any KeychainAccessing
 
-    init(files: any TextFileAccessing = LocalTextFileAccessor()) {
+    init(files: any TextFileAccessing = LocalTextFileAccessor(),
+         keychain: any KeychainAccessing = SecurityKeychainAccessor()) {
         self.files = files
+        self.keychain = keychain
+    }
+
+    /// The captured `Cookie` header for ollama.com, or `nil` when the user hasn't linked a web session.
+    func loadSessionHeader() -> String? {
+        (try? keychain.readGenericPasswordForCurrentUser(service: Self.keychainSessionService))?
+            .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    func saveSessionHeader(_ header: String) throws {
+        try keychain.writeGenericPasswordForCurrentUser(service: Self.keychainSessionService, value: header)
+    }
+
+    /// Drop the stored session after the server rejects it, so the header's Sign In button returns.
+    func clearSessionHeader() throws {
+        try keychain.deleteGenericPasswordForCurrentUser(service: Self.keychainSessionService)
     }
 
     /// The parsed signing key, or `nil` when Ollama isn't installed here. Throws when the file exists

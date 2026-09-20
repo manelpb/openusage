@@ -294,6 +294,10 @@ final class FakeKeychain: KeychainAccessing, @unchecked Sendable {
     func writeGenericPassword(service: String, value: String) throws {
         self.value = value
     }
+
+    func deleteGenericPasswordForCurrentUser(service: String) throws {
+        value = nil
+    }
 }
 
 final class ServiceKeychain: KeychainAccessing, @unchecked Sendable {
@@ -319,6 +323,10 @@ final class ServiceKeychain: KeychainAccessing, @unchecked Sendable {
 
     func writeGenericPasswordForCurrentUser(service: String, value: String) throws {
         currentUserValues[service] = value
+    }
+
+    func deleteGenericPasswordForCurrentUser(service: String) throws {
+        currentUserValues.removeValue(forKey: service)
     }
 }
 

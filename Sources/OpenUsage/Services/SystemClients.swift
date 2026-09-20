@@ -244,12 +244,20 @@ protocol KeychainAccessing: Sendable {
     /// item under a known account name (e.g. Antigravity's `agy` token under service `gemini`,
     /// account `antigravity`) rather than the current user.
     func readGenericPassword(service: String, account: String) throws -> String?
+
+    /// Delete the current user's generic password for `service`. Used to drop a stored web session once
+    /// the server rejects it, so a stale cookie isn't kept.
+    func deleteGenericPasswordForCurrentUser(service: String) throws
 }
 
 extension KeychainAccessing {
     func readGenericPasswordForCurrentUser(service: String) throws -> String? {
         try readGenericPassword(service: service)
     }
+
+    /// Default for test doubles that model reads/writes but not deletion. The real
+    /// `SecurityKeychainAccessor` overrides this to remove the item via `/usr/bin/security`.
+    func deleteGenericPasswordForCurrentUser(service: String) throws {}
 
     func writeGenericPasswordForCurrentUser(service: String, value: String) throws {
         try writeGenericPassword(service: service, value: value)
@@ -358,6 +366,20 @@ struct SecurityKeychainAccessor: KeychainAccessing {
         }
     }
 
+    func deleteGenericPasswordForCurrentUser(service: String) throws {
+        let result = try processRunner.run(
+            executable: "/usr/bin/security",
+            arguments: ["delete-generic-password", "-a", currentUserAccount(), "-s", service],
+            environment: [:],
+            timeout: 5
+        )
+        // Exit 44 (itemNotFound) means the item is already gone — the caller's desired end state.
+        guard result.succeeded || result.exitCode == Self.itemNotFoundExitCode else {
+            AppLog.warn(.keychain, "delete failed for service '\(service)' (exit \(result.exitCode))")
+            throw KeychainError.deleteFailed(result.stderr)
+        }
+    }
+
     private func currentUserAccount() -> String {
         ProcessInfo.processInfo.environment["USER"]?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         ?? NSUserName()
@@ -367,6 +389,7 @@ struct SecurityKeychainAccessor: KeychainAccessing {
 enum KeychainError: Error, LocalizedError {
     case writeFailed(String)
     case readFailed(String)
+    case deleteFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -374,6 +397,8 @@ enum KeychainError: Error, LocalizedError {
             return message.isEmpty ? "Keychain write failed." : message
         case .readFailed(let message):
             return message.isEmpty ? "Keychain read failed." : message
+        case .deleteFailed(let message):
+            return message.isEmpty ? "Keychain delete failed." : message
         }
     }
 }

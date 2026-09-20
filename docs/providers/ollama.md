@@ -17,9 +17,13 @@ Session and Weekly are always visible and start pinned to the menu bar. Last 4 W
 provider's caret — you can move any of them in **Customize**. A $0.00 on that row means no extra charges,
 not an idle month: everything inside your plan's allowance is already counted by Session and Weekly.
 
-The session window is 5 hours and the weekly window is 7 days, but Ollama reports only how much of each
-window you have used — never when the current one started or ends. These meters therefore show no reset
-countdown, rather than a guessed one. Local models don't count toward either limit; only cloud models do.
+The session window is 5 hours and the weekly window is 7 days, but Ollama's `/api/usage` reports only how
+much of each window you have used — never when the current one resets. So by default these meters show no
+reset countdown, rather than a guessed one. Sign in to ollama.com inside OpenUsage (**Sign In** on the
+Ollama header) and the reset times are read from your settings page instead: Session and Weekly then show a
+countdown, and a **Run-out** row projects when you'd hit the limit. Without signing in, the values still
+update — only the countdown and Run-out stay away. Local models don't count toward either limit; only cloud
+models do.
 
 ## Where credentials come from
 
@@ -42,8 +46,12 @@ ollama signin
 ```
 
 3. Turn **Ollama** on in **Customize** — unlike most providers, it never enables itself (see above).
+4. Optional, for reset countdowns: click **Sign In** on the Ollama header and log in to ollama.com. This
+   stores an ollama.com session cookie in your Keychain (no password), used only to read the reset times on
+   your settings page.
 
-Session and Weekly then appear on the dashboard and in the menu bar on the next refresh.
+Session and Weekly then appear on the dashboard and in the menu bar on the next refresh. After signing in,
+they also show a reset countdown and the **Run-out** row appears.
 
 ## Under the hood
 
@@ -51,6 +59,10 @@ Two ollama.com endpoints, both authenticated with a signature from your local Ol
 
 - `GET https://ollama.com/api/usage` — the session and weekly meters plus recent activity spend.
 - `POST https://ollama.com/api/me` — the plan name (best-effort; a failure here doesn't blank the meters).
+- `GET https://ollama.com/settings` — only after you **Sign In**: the settings page's `data-time`
+  attributes carry the Session/Weekly reset instants. They're cached until they pass, and the meters keep
+  using the signed `/api/usage` values — the page is read for reset times only. If ollama.com rejects the
+  stored session, the Sign In button returns and the countdowns drop off until you sign in again.
 
 Each request carries an `Authorization` header of `<public key>:<signature>`, signing the string
 `<METHOD>,<request-uri>` where the URI includes a `ts` unix-seconds parameter — the same scheme the
@@ -69,5 +81,7 @@ at all is reported as an invalid response.
   Run `ollama signin`.
 - **"Couldn't read ~/.ollama/id_ed25519"** — the key file exists but isn't readable. Check its
   permissions (it should be owned by you, mode `600`).
+- **No reset countdown, and Run-out shows "No data"** — you're not signed in to ollama.com in the app, or
+  the stored session expired. Click **Sign In** on the Ollama header.
 - **Meters show "No usage data"** — you're signed in, but Ollama returned no limits for the account yet.
   Check your usage at [ollama.com/settings](https://ollama.com/settings).

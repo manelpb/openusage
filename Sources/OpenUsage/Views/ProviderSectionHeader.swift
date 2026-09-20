@@ -24,6 +24,9 @@ struct ProviderSectionHeader: View {
     /// Dashboard-only screenshot action. The reorder preview omits it, while Customize uses its own
     /// row type and is unaffected by this header.
     var onCopyScreenshot: (() -> Bool)?
+    /// Optional in-app sign-in action for providers whose login can be completed without leaving the app
+    /// (Ollama). Rendered as a small button beside the name; `nil` for every other provider.
+    var onSignIn: (() -> Void)?
 
     /// Header type and icon track the density setting like the rows do, so Compact shrinks the
     /// whole section anatomy — not just the rows under it.
@@ -38,7 +41,8 @@ struct ProviderSectionHeader: View {
         warning: String? = nil,
         refreshing: Bool = false,
         staleness: StalenessHint? = nil,
-        onCopyScreenshot: (() -> Bool)? = nil
+        onCopyScreenshot: (() -> Bool)? = nil,
+        onSignIn: (() -> Void)? = nil
     ) {
         self.provider = provider
         self.plan = plan
@@ -46,6 +50,7 @@ struct ProviderSectionHeader: View {
         self.refreshing = refreshing
         self.staleness = staleness
         self.onCopyScreenshot = onCopyScreenshot
+        self.onSignIn = onSignIn
     }
 
     var body: some View {
@@ -91,6 +96,11 @@ struct ProviderSectionHeader: View {
                     .foregroundStyle(Theme.notice)
                     .hoverTooltip(warning)
                     .accessibilityLabel(warning)
+            }
+            if let onSignIn {
+                Button("Sign In", action: onSignIn)
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
             }
             Spacer(minLength: 8)
             if let onCopyScreenshot {

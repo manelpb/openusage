@@ -9,20 +9,30 @@ final class OllamaProvider: ProviderRuntime {
         links: [
             ProviderLink(label: "Usage", url: "https://ollama.com/settings"),
             ProviderLink(label: "API Keys", url: "https://ollama.com/settings/keys")
-        ]
+        ],
+        supportsInAppSignIn: true
     )
 
     let authStore: OllamaAuthStore
     let usageClient: OllamaUsageClient
+    let resetSource: any OllamaResetSource
+    let resetCache: OllamaResetCache
     let now: @Sendable () -> Date
+    /// Cached presence of the web session, rewritten once per `refresh()`. The header's Sign In gate
+    /// reads this during rendering, so it must never trigger a keychain (subprocess) read itself.
+    private var hasSession = false
 
     init(
         authStore: OllamaAuthStore = OllamaAuthStore(),
         usageClient: OllamaUsageClient = OllamaUsageClient(),
+        resetSource: any OllamaResetSource = OllamaHTTPResetSource(),
+        resetCache: OllamaResetCache = OllamaResetCache(),
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.authStore = authStore
         self.usageClient = usageClient
+        self.resetSource = resetSource
+        self.resetCache = resetCache
         self.now = now
     }
 
@@ -36,6 +46,9 @@ final class OllamaProvider: ProviderRuntime {
             .percent(id: "ollama.weekly", provider: provider, title: "Weekly",
                      metricLabel: "Weekly")
                 .exportingLimit("weekly", unit: "percent"),
+            // Derived from the Session/Weekly meters above; renders "No data" until a web session supplies
+            // reset instants — see OllamaResetSource.
+            .projectionSummary(provider: provider),
             // Ollama reports recent spend as a single rolling four-week total, not a daily history, so
             // this is one unbounded dollar row rather than the Today/Yesterday/Last 30 Days tiles the
             // local-scanner providers ship.
@@ -60,7 +73,17 @@ final class OllamaProvider: ProviderRuntime {
     /// here?", and it costs a Cloud subscriber one visit to Customize.
     func hasLocalCredentials() async -> Bool { false }
 
+    /// Whether a captured ollama.com web session cookie is stored. Drives the header's Sign In button:
+    /// hidden while the user is already signed in, restored once the session is rejected or cleared.
+    /// Render-safe: reads the flag cached by the last `refresh()`, not the keychain.
+    func hasStoredWebSession() -> Bool { hasSession }
+
     func refresh() async -> ProviderSnapshot {
+        // The single keychain read of the web session per refresh. Done off-main, before the early
+        // error returns, so `hasSession` always reflects the latest state the button gate can see.
+        let sessionHeader = await loadOffMainActor { [authStore] in authStore.loadSessionHeader() }
+        hasSession = sessionHeader != nil
+
         let key: OllamaSigningKey?
         do {
             key = try await loadOffMainActor { [authStore] in try authStore.loadSigningKey() }
@@ -92,7 +115,9 @@ final class OllamaProvider: ProviderRuntime {
         switch usage {
         case .success(let body):
             do {
-                let mapped = try OllamaUsageMapper.map(usageBody: body, accountBody: accountBody)
+                let resets = await resolveResets(header: sessionHeader)
+                let mapped = try OllamaUsageMapper.map(usageBody: body, accountBody: accountBody,
+                                                       resets: resets)
                 return ProviderSnapshot.make(provider: provider, plan: mapped.plan, lines: mapped.lines,
                                              refreshedAt: now(), warning: warning)
             } catch {
@@ -104,6 +129,39 @@ final class OllamaProvider: ProviderRuntime {
             return ProviderSnapshot.error(provider: provider, error: OllamaAuthError.notSignedIn)
         case .failed(let error):
             return ProviderSnapshot.error(provider: provider, error: error)
+        }
+    }
+
+    /// The reset instants from the authenticated web session, if the user has one. Best-effort: a
+    /// missing session header, an expired cookie, or any transport failure leaves the meters exactly as
+    /// they were before resets existed. A still-valid cached pair short-circuits the settings fetch.
+    /// `header` is the session read taken once at the top of `refresh()`.
+    private func resolveResets(header: String?) async -> OllamaResets? {
+        // Cached resets are only ever future, unexpired instants, so they stay valid even after the web
+        // session is rejected — there is nothing stale to drop, and re-auth is only needed once the cache
+        // expires and the source is consulted again (at which point the rejection clears the session).
+        if let cached = resetCache.current(now: now()) { return cached }
+        guard let header else { return nil }
+        do {
+            let resets = try await resetSource.resets(cookieHeader: header)?.sanitized(now: now())
+            if let resets, !resets.isEmpty { resetCache.store(resets, now: now()) }
+            return resets
+        } catch {
+            // Only an explicit auth rejection means the stored cookie is dead: drop it so the header's
+            // Sign In button returns, and drop the cached resets so their stale instants don't linger.
+            // Transport and parse failures are transient and must not sign the user out. The cache is
+            // cleared first so it can't outlive the session even if the keychain delete fails.
+            if error as? OllamaAuthError == .notSignedIn {
+                hasSession = false
+                resetCache.clear()
+                do {
+                    try await loadOffMainActor { [authStore] in try authStore.clearSessionHeader() }
+                } catch {
+                    AppLog.warn(.keychain, "ollama session clear failed (\(error))")
+                }
+            }
+            AppLog.warn(.refresh, "ollama reset lookup failed (\(error)); meters unaffected")
+            return nil
         }
     }
 

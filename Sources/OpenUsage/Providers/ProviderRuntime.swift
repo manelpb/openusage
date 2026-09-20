@@ -40,10 +40,16 @@ protocol ProviderRuntime: AnyObject {
     /// `FirstRunSeeder` to enable exactly the providers the user actually has. Mirror the credential
     /// sources `refresh()` reads, and run blocking loads via `loadOffMainActor`.
     func hasLocalCredentials() async -> Bool
+
+    /// Whether a stored web session already exists for this provider, so the header can hide its in-app
+    /// Sign In affordance. False for every provider except those that capture a session separately from
+    /// the credential `refresh()` reads (Ollama's browser cookie).
+    func hasStoredWebSession() -> Bool
 }
 
 extension ProviderRuntime {
     var allowsCachedLocalHistory: Bool { true }
+    func hasStoredWebSession() -> Bool { false }
 }
 
 /// Run a blocking, `Sendable` credential load off the MainActor.

@@ -12,14 +12,19 @@ struct PaceProjectionXAxis: View {
         Canvas { context, size in
             let edgeInset: CGFloat = 12
             let labelY = size.height / 2
+            // Right-anchor the reset date at the edge so it never clips, and drop the redundant "now"
+            // marker when the two would overlap (the reset is imminent).
+            let resetX = size.width - 2
             let nowX = min(max(point(x: projection.elapsedFraction, in: size).x, edgeInset), size.width - edgeInset)
-            let resetX = min(max(point(x: 1, in: size).x, edgeInset), size.width - 30)
+            let showsNow = resetX - nowX >= 34
             var lastDayLabelX: CGFloat = -.infinity
             if let trajectory {
                 for p in trajectory {
                     if let label = p.label {
                         let px = min(max(point(x: p.x, in: size).x, edgeInset), size.width - edgeInset)
-                        if px - lastDayLabelX >= 24, abs(px - nowX) >= 20, abs(px - resetX) >= 20 {
+                        if px - lastDayLabelX >= 24,
+                           !showsNow || abs(px - nowX) >= 20,
+                           resetX - px >= 34 {
                             context.draw(Text(label).font(.system(size: 8)).foregroundStyle(.secondary),
                                          at: CGPoint(x: px, y: labelY))
                             lastDayLabelX = px
@@ -27,10 +32,12 @@ struct PaceProjectionXAxis: View {
                     }
                 }
             }
-            context.draw(Text("now").font(.system(size: 8)).foregroundStyle(.secondary),
-                         at: CGPoint(x: nowX, y: labelY))
+            if showsNow {
+                context.draw(Text("now").font(.system(size: 8)).foregroundStyle(.secondary),
+                             at: CGPoint(x: nowX, y: labelY))
+            }
             context.draw(Text(Formatters.monthDayLabel(projection.resetsAt)).font(.system(size: 8)).foregroundStyle(.secondary),
-                         at: CGPoint(x: resetX, y: labelY))
+                         at: CGPoint(x: resetX, y: labelY), anchor: .trailing)
         }
         .frame(height: 12)
     }

@@ -52,6 +52,19 @@ struct DashboardView: View {
     /// attaches to this panel as a sheet (see `StatusItemController`'s attached-sheet guard), so a
     /// click on its buttons can't be misread as an outside click that dismisses the popover.
     @State private var isPresentingResetAllConfirm = false
+    /// The provider ID whose in-app sign-in sheet is currently presented. Only providers that opt into
+    /// `supportsInAppSignIn` (Ollama) ever set it.
+    @State private var signInProvider: SignInProvider?
+    /// A failure saving the captured session cookie after sign-in. Surfaced as an alert so a keychain
+    /// write failure isn't silently followed by the sheet dismissing as if sign-in succeeded.
+    @State private var signInSaveError: String?
+    /// Writes the captured ollama.com session cookie when the in-app login sheet succeeds.
+    private let ollamaAuthStore = OllamaAuthStore()
+
+    /// Identifies the provider whose sign-in sheet is up; `id` is the provider ID.
+    private struct SignInProvider: Identifiable {
+        let id: String
+    }
     /// Shared horizontal inset for dashboard content and fixed chrome.
     private static let outerPadding: CGFloat = 14
     /// Breathing room between the bottom of the scrolling content and the pinned footer. Kept small
@@ -252,6 +265,28 @@ struct DashboardView: View {
             // Sourced from the controller's show/hide chokepoints (`popoverShown`), not occlusion — a
             // `.canJoinAllSpaces` panel is briefly occluded mid Space-switch while still on-screen.
             .environment(\.popoverIsVisible, transparency.popoverShown)
+            // In-app sign-in for providers that opt in (Ollama). The sheet attaches to the panel, which
+            // `PanelOutsideClickMonitor` already treats as an "inside" context (`panel.attachedSheet`), so
+            // clicks in the web view can't be misread as outside clicks that dismiss the popover.
+            .sheet(item: $signInProvider) { provider in
+                OllamaLoginView { result in
+                    do {
+                        try ollamaAuthStore.saveSessionHeader(result.cookieHeader)
+                    } catch {
+                        AppLog.warn(.refresh, "ollama session save failed: \(error)")
+                        signInSaveError = "Your Ollama sign-in was captured, but the session couldn't be saved to the keychain. Usage may not include reset times until you sign in again.\n\n\(error.localizedDescription)"
+                    }
+                    Task { await dataStore.refresh(providerID: provider.id, force: true) }
+                }
+            }
+            .alert("Couldn't Save Ollama Sign-In", isPresented: Binding(
+                get: { signInSaveError != nil },
+                set: { if !$0 { signInSaveError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(signInSaveError ?? "")
+            }
     }
 
     private func resetTransientState() {
@@ -270,6 +305,11 @@ struct DashboardView: View {
         // Dismiss a pending Reset All confirmation if the popover closes mid-alert — the SwiftUI tree
         // survives `orderOut`, so without this the sheet would reappear stale on the next open.
         isPresentingResetAllConfirm = false
+        // The sign-in sheet is hosted by this view's body; close it too so it can't reappear stale on
+        // the next popover open.
+        signInProvider = nil
+        // A save-failure alert is likewise transient; drop it so it can't resurface on reopen.
+        signInSaveError = nil
         // Drop the driven height so the next open re-establishes it (un-animated) from the reopened
         // screen's measurement instead of springing from this session's last value. Until then the
         // 0 sentinel keeps `PanelHeightModifier` from pushing, so the controller's opening guess stands.
@@ -467,7 +507,8 @@ struct DashboardView: View {
                 horizontalPadding: Self.outerPadding,
                 bottomGap: Self.contentBottomGap,
                 reorderLift: $reorderLift,
-                scrollPosition: $dashboardScrollPosition
+                scrollPosition: $dashboardScrollPosition,
+                onSignIn: { signInProvider = SignInProvider(id: $0) }
             )
         case .customize:
             CustomizeView(

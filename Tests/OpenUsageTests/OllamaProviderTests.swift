@@ -158,6 +158,24 @@ final class OllamaAuthStoreTests: XCTestCase {
             XCTAssertEqual(error as? OllamaAuthError, .invalidKey)
         }
     }
+
+    func testSessionHeaderRoundTripsThroughTheKeychain() throws {
+        let store = OllamaAuthStore(files: FakeFiles(), keychain: FakeKeychain())
+
+        XCTAssertNil(store.loadSessionHeader())
+        try store.saveSessionHeader("wos-session=abc")
+        XCTAssertEqual(store.loadSessionHeader(), "wos-session=abc")
+    }
+
+    func testClearingTheSessionHeaderRemovesItFromTheKeychain() throws {
+        let store = OllamaAuthStore(files: FakeFiles(), keychain: FakeKeychain())
+        try store.saveSessionHeader("wos-session=abc")
+        XCTAssertNotNil(store.loadSessionHeader())
+
+        try store.clearSessionHeader()
+
+        XCTAssertNil(store.loadSessionHeader())
+    }
 }
 
 // MARK: - Request signing
@@ -217,8 +235,9 @@ final class OllamaUsageMapperTests: XCTestCase {
         XCTAssertEqual(used, 34.9, accuracy: 0.0001)
         XCTAssertEqual(limit, 100)
         XCTAssertEqual(format, .percent)
-        // Ollama publishes neither a reset instant nor the current window's start, so the meter carries
-        // no countdown and no period — a period without a reset date renders as a static "Resets in 5h".
+        // The usage payload itself carries neither a reset instant nor the current window's start, and
+        // this call passes no `resets`, so the meter carries no countdown and no period — a period
+        // without a reset date renders as a static "Resets in 5h".
         XCTAssertNil(resetsAt)
         XCTAssertNil(periodMs)
 
@@ -241,7 +260,11 @@ final class OllamaUsageMapperTests: XCTestCase {
 
     func testMetricLabelsMatchTheProvidersWidgetDescriptors() async throws {
         let mapped = try OllamaUsageMapper.map(usageBody: data(usageJSON), accountBody: nil)
-        let labels = await MainActor.run { OllamaProvider().widgetDescriptors.map(\.metricLabel) }
+        // The Run-out row is derived by `WidgetDataStore`, not emitted in the snapshot, so it is the one
+        // descriptor without a matching mapped line.
+        let descriptors = await MainActor.run { OllamaProvider().widgetDescriptors }
+        XCTAssertEqual(descriptors.filter(\.isProjectionSummary).map(\.id), ["ollama.projection"])
+        let labels = descriptors.filter { !$0.isProjectionSummary }.map(\.metricLabel)
 
         XCTAssertEqual(mapped.lines.map(\.label), labels)
     }
@@ -270,6 +293,40 @@ final class OllamaUsageMapperTests: XCTestCase {
         XCTAssertEqual(OllamaUsageMapper.planName(from: data(#"{"plan":"max"}"#)), "Max")
         XCTAssertNil(OllamaUsageMapper.planName(from: data(#"{"Plan":""}"#)))
         XCTAssertNil(OllamaUsageMapper.planName(from: data("not json")))
+    }
+
+    func testResetsAreAttachedToTheMetersWithPeriodLengths() throws {
+        let resets = OllamaResets(session: OpenUsageISO8601.date(from: "2026-09-19T19:55:00Z"),
+                                  weekly: OpenUsageISO8601.date(from: "2026-09-24T11:55:00Z"))
+        let mapped = try OllamaUsageMapper.map(usageBody: data(usageJSON), accountBody: nil, resets: resets)
+        guard case .progress(_, _, _, _, let sessionReset, let sessionMs, _) = mapped.lines[0],
+              case .progress(_, _, _, _, let weeklyReset, let weeklyMs, _) = mapped.lines[1] else {
+            return XCTFail("expected progress lines")
+        }
+        XCTAssertEqual(sessionReset, resets.session)
+        XCTAssertEqual(weeklyReset, resets.weekly)
+        XCTAssertEqual(sessionMs, 18_000_000)
+        XCTAssertEqual(weeklyMs, 604_800_000)
+    }
+
+    func testWeeklyOnlyResetLeavesSessionUnbounded() throws {
+        let resets = OllamaResets(session: nil, weekly: OpenUsageISO8601.date(from: "2026-09-24T11:55:00Z"))
+        let mapped = try OllamaUsageMapper.map(usageBody: data(usageJSON), accountBody: nil, resets: resets)
+        guard case .progress(_, _, _, _, let sessionReset, let sessionMs, _) = mapped.lines[0],
+              case .progress(_, _, _, _, let weeklyReset, let weeklyMs, _) = mapped.lines[1] else {
+            return XCTFail("expected Session and Weekly progress lines")
+        }
+        XCTAssertNil(sessionReset)
+        XCTAssertNil(sessionMs, "a session meter with no reset instant must not carry a period")
+        XCTAssertEqual(weeklyReset, resets.weekly)
+        XCTAssertEqual(weeklyMs, 604_800_000)
+    }
+
+    func testNoResetsLeavesTheMetersUnchanged() throws {
+        let mapped = try OllamaUsageMapper.map(usageBody: data(usageJSON), accountBody: nil)
+        guard case .progress(_, _, _, _, let reset, let period, _) = mapped.lines[0] else { return XCTFail() }
+        XCTAssertNil(reset)
+        XCTAssertNil(period)
     }
 }
 
@@ -371,10 +428,411 @@ final class OllamaProviderRefreshTests: XCTestCase {
         XCTAssertEqual(spend?.sample.isUsagePeriod, false)
     }
 
-    private func makeProvider(http: any HTTPClient) -> OllamaProvider {
-        OllamaProvider(
-            authStore: OllamaAuthStore(files: FakeFiles([OllamaAuthStore.keyPath: testPrivateKeyPEM])),
-            usageClient: OllamaUsageClient(http: http, now: { Date(timeIntervalSince1970: 0) })
+    func testOffersAProjectionRow() {
+        let ids = OllamaProvider().widgetDescriptors.map(\.id)
+        XCTAssertTrue(ids.contains("ollama.projection"), "expected Run-out row: \(ids)")
+    }
+
+    func testProjectionRowIsAlwaysVisibleAndUnpinnedByDefault() {
+        XCTAssertTrue(DefaultLayout.metricIDs.contains("ollama.projection"))
+        XCTAssertFalse(DefaultLayout.expandedMetricIDs.contains("ollama.projection"))
+        XCTAssertFalse(DefaultLayout.pinnedMetricIDs.contains("ollama.projection"))
+    }
+
+    /// Drives the header's Sign In gating: false until a refresh has cached the (off-main) keychain
+    /// read, then true only while a web session cookie is stored. Never reads the keychain itself.
+    func testHasStoredWebSessionReflectsTheLastRefresh() async {
+        let withSession = makeProvider(http: FakeHTTPClient(response: ok(usageJSON)),
+                                       sessionHeader: "wos-session=abc")
+        let withoutSession = makeProvider(http: FakeHTTPClient(response: ok(usageJSON)))
+
+        XCTAssertFalse(withSession.hasStoredWebSession(), "no keychain read before a refresh")
+        XCTAssertFalse(withoutSession.hasStoredWebSession())
+
+        _ = await withSession.refresh()
+        _ = await withoutSession.refresh()
+
+        XCTAssertTrue(withSession.hasStoredWebSession())
+        XCTAssertFalse(withoutSession.hasStoredWebSession())
+    }
+
+}
+
+/// A provider wired to the in-memory key fixture, a canned HTTP client, and an optional web session.
+/// `sessionHeader` is seeded through the fake keychain, so a provider with no header behaves exactly
+/// like the pre-session provider. Each call gets an isolated reset cache so no test touches the real
+/// `UserDefaults` domain.
+@MainActor
+private func makeProvider(
+    http: any HTTPClient,
+    resetSource: any OllamaResetSource = FakeResetSource(result: nil),
+    resetCache: OllamaResetCache = OllamaResetCache(
+        userDefaults: UserDefaults(suiteName: "ollamaProviderTests.\(UUID().uuidString)")!
+    ),
+    now: Date = Date(timeIntervalSince1970: 0),
+    sessionHeader: String? = nil
+) -> OllamaProvider {
+    OllamaProvider(
+        authStore: OllamaAuthStore(
+            files: FakeFiles([OllamaAuthStore.keyPath: testPrivateKeyPEM]),
+            keychain: FakeKeychain(sessionHeader)
+        ),
+        usageClient: OllamaUsageClient(http: http, now: { now }),
+        resetSource: resetSource,
+        resetCache: resetCache,
+        now: { now }
+    )
+}
+
+/// Same wiring as `makeProvider`, but hands back the keychain so a test can assert the stored session
+/// survived or was cleared by a refresh.
+@MainActor
+private func makeProvider(
+    http: any HTTPClient,
+    keychain: FakeKeychain,
+    resetSource: any OllamaResetSource = FakeResetSource(result: nil),
+    resetCache: OllamaResetCache = OllamaResetCache(
+        userDefaults: UserDefaults(suiteName: "ollamaProviderTests.\(UUID().uuidString)")!
+    ),
+    now: Date = Date(timeIntervalSince1970: 0)
+) -> OllamaProvider {
+    OllamaProvider(
+        authStore: OllamaAuthStore(
+            files: FakeFiles([OllamaAuthStore.keyPath: testPrivateKeyPEM]),
+            keychain: keychain
+        ),
+        usageClient: OllamaUsageClient(http: http, now: { now }),
+        resetSource: resetSource,
+        resetCache: resetCache,
+        now: { now }
+    )
+}
+
+private struct FakeResetSource: OllamaResetSource {
+    var result: OllamaResets?
+    var error: Error?
+    func resets(cookieHeader: String) async throws -> OllamaResets? {
+        if let error { throw error }
+        return result
+    }
+}
+
+/// Reads back a stored session but fails every delete, so a test can prove the session flag and cache
+/// still clear after a rejected session even when local cleanup fails.
+private final class DeleteFailingKeychain: KeychainAccessing, @unchecked Sendable {
+    private let value: String
+
+    init(_ value: String) { self.value = value }
+
+    func readGenericPassword(service: String) throws -> String? { value }
+    func writeGenericPassword(service: String, value: String) throws {}
+    func deleteGenericPasswordForCurrentUser(service: String) throws {
+        throw KeychainError.deleteFailed("delete unavailable")
+    }
+}
+
+/// Counts calls so a test can prove the cache short-circuits the settings fetch.
+private final class CountingResetSource: OllamaResetSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var result: OllamaResets?
+
+    init(result: OllamaResets?) { self.result = result }
+
+    var calls: Int { lock.withLock { count } }
+
+    func resets(cookieHeader: String) async throws -> OllamaResets? {
+        lock.withLock { count += 1 }
+        return result
+    }
+}
+
+final class OllamaResetCacheTests: XCTestCase {
+    func testReusesResetsWhileInTheFuture() {
+        let suite = "ollamaResetCache.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let cache = OllamaResetCache(userDefaults: defaults)
+        cache.store(OllamaResets(session: now.addingTimeInterval(3600),
+                                 weekly: now.addingTimeInterval(86400)),
+                    now: now)
+        XCTAssertNotNil(cache.current(now: now))
+        XCTAssertNil(cache.current(now: now.addingTimeInterval(9 * 86400)))
+    }
+
+    func testEmptyResetsAreNotStored() {
+        let suite = "ollamaResetCache.empty.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let cache = OllamaResetCache(userDefaults: defaults)
+
+        cache.store(OllamaResets(session: nil, weekly: nil), now: now)
+
+        XCTAssertNil(cache.current(now: now))
+    }
+
+    /// Once the 5h session instant elapses, the cached pair must stop being served even while the 7d
+    /// weekly instant is still in the future — otherwise a past session reset is attached for days.
+    func testElapsedSessionResetInvalidatesCache() {
+        let suite = "ollamaResetCache.elapsed.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let cache = OllamaResetCache(userDefaults: defaults)
+        cache.store(OllamaResets(session: now.addingTimeInterval(3600),
+                                 weekly: now.addingTimeInterval(7200)),
+                    now: now)
+
+        XCTAssertNil(cache.current(now: now.addingTimeInterval(5400)))
+    }
+}
+
+final class OllamaResetsTests: XCTestCase {
+    func testSanitizedDropsElapsedInstantsAndKeepsFutureOnes() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let resets = OllamaResets(session: now.addingTimeInterval(-1),
+                                  weekly: now.addingTimeInterval(3600))
+
+        XCTAssertEqual(resets.sanitized(now: now),
+                       OllamaResets(session: nil, weekly: now.addingTimeInterval(3600)))
+    }
+
+    func testSanitizedOfFullyElapsedResetsIsEmpty() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let resets = OllamaResets(session: now.addingTimeInterval(-3600),
+                                  weekly: now.addingTimeInterval(-1))
+
+        XCTAssertEqual(resets.sanitized(now: now), OllamaResets(session: nil, weekly: nil))
+    }
+}
+
+@MainActor
+final class OllamaProviderResetTests: XCTestCase {
+    func testProviderAttachesResetsFromSource() async {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let resets = OllamaResets(session: now.addingTimeInterval(3600),
+                                  weekly: now.addingTimeInterval(86400))
+        let provider = makeProvider(http: RoutedHTTPClient([
+            OllamaUsageClient.usagePath: ok(usageJSON),
+            OllamaUsageClient.accountPath: ok(accountJSON)
+        ]), resetSource: FakeResetSource(result: resets), now: now,
+           sessionHeader: "wos-session=abc")
+        let snapshot = await provider.refresh()
+        guard case .progress(_, _, _, _, let reset, _, _) = snapshot.lines[0] else { return XCTFail() }
+        XCTAssertEqual(reset, resets.session)
+    }
+
+    func testProviderWithoutSessionSkipsResets() async {
+        let provider = makeProvider(http: RoutedHTTPClient([
+            OllamaUsageClient.usagePath: ok(usageJSON),
+            OllamaUsageClient.accountPath: ok(accountJSON)
+        ]), resetSource: FakeResetSource(result: nil))
+        let snapshot = await provider.refresh()
+        guard case .progress(_, _, _, _, let reset, _, _) = snapshot.lines[0] else { return XCTFail() }
+        XCTAssertNil(reset)
+    }
+
+    /// With no captured web session, the settings fetch must not even be attempted — the meters stay
+    /// exactly as they were before resets existed.
+    func testNoSessionHeaderDoesNotConsultTheSource() async {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let source = CountingResetSource(result: OllamaResets(
+            session: now.addingTimeInterval(3600), weekly: now.addingTimeInterval(86400)))
+        let provider = makeProvider(http: RoutedHTTPClient([
+            OllamaUsageClient.usagePath: ok(usageJSON),
+            OllamaUsageClient.accountPath: ok(accountJSON)
+        ]), resetSource: source, now: now)
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(source.calls, 0)
+        guard case .progress(_, _, _, _, let reset, _, _) = snapshot.lines[0] else { return XCTFail() }
+        XCTAssertNil(reset)
+    }
+
+    /// A cached reset that is still in the future must short-circuit the settings fetch entirely.
+    func testCachedResetsSkipTheSettingsFetch() async {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let suite = "ollamaProviderResetCache.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = OllamaResetCache(userDefaults: defaults)
+        cache.store(OllamaResets(session: now.addingTimeInterval(3600),
+                                 weekly: now.addingTimeInterval(86400)),
+                    now: now)
+        let source = CountingResetSource(result: nil)
+        let provider = makeProvider(http: RoutedHTTPClient([
+            OllamaUsageClient.usagePath: ok(usageJSON),
+            OllamaUsageClient.accountPath: ok(accountJSON)
+        ]), resetSource: source, resetCache: cache, now: now, sessionHeader: "wos-session=abc")
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(source.calls, 0)
+        guard case .progress(_, _, _, _, let reset, _, _) = snapshot.lines[0] else { return XCTFail() }
+        XCTAssertEqual(reset, now.addingTimeInterval(3600))
+    }
+
+    /// A cache whose session instant has since elapsed must not be trusted: the provider refetches and
+    /// attaches the fresh instant instead of the stale one.
+    func testExpiredCacheTriggersRefetch() async {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let suite = "ollamaProviderExpiredCache.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = OllamaResetCache(userDefaults: defaults)
+        // Stored while both instants were future; the session instant has since elapsed.
+        cache.store(OllamaResets(session: now.addingTimeInterval(-3600),
+                                 weekly: now.addingTimeInterval(86400)),
+                    now: now.addingTimeInterval(-7200))
+        let freshSession = now.addingTimeInterval(1800)
+        let source = CountingResetSource(result: OllamaResets(
+            session: freshSession, weekly: now.addingTimeInterval(86400)))
+        let provider = makeProvider(http: RoutedHTTPClient([
+            OllamaUsageClient.usagePath: ok(usageJSON),
+            OllamaUsageClient.accountPath: ok(accountJSON)
+        ]), resetSource: source, resetCache: cache, now: now, sessionHeader: "wos-session=abc")
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertEqual(source.calls, 1)
+        guard case .progress(_, _, _, _, let reset, _, _) = snapshot.lines[0] else { return XCTFail() }
+        XCTAssertEqual(reset, freshSession)
+    }
+
+    /// A rejected web session is not merely best-effort: the stored cookie must be dropped so the
+    /// header's Sign In button returns, while the meters still render from the signed API.
+    func testSignedOutResetSourceClearsTheStoredSessionAndStillReturnsMeters() async {
+        let keychain = FakeKeychain("wos-session=abc")
+        let provider = makeProvider(
+            http: RoutedHTTPClient([
+                OllamaUsageClient.usagePath: ok(usageJSON),
+                OllamaUsageClient.accountPath: ok(accountJSON)
+            ]),
+            keychain: keychain,
+            resetSource: FakeResetSource(result: nil, error: OllamaAuthError.notSignedIn)
         )
+        XCTAssertFalse(provider.hasStoredWebSession(), "no keychain read before a refresh")
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertEqual(snapshot.lines.map(\.label), ["Session", "Weekly", "Last 4 Weeks"])
+        XCTAssertFalse(provider.hasStoredWebSession())
+        XCTAssertNil(keychain.value, "the rejected session must be deleted from the keychain")
+    }
+
+    /// Signing out also drops the cached reset instants, so a stale countdown can't outlive its session.
+    func testSignedOutResetSourceDropsTheCachedResets() async {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let suite = "ollamaProviderSignOutCache.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        // Seed an already-elapsed session instant alongside a future weekly one, so `current` reports
+        // the cache stale and the source is consulted.
+        defaults.set(["session": now.addingTimeInterval(-3600).timeIntervalSince1970,
+                      "weekly": now.addingTimeInterval(86400).timeIntervalSince1970],
+                     forKey: OllamaResetCache.defaultsKey)
+        let provider = makeProvider(
+            http: RoutedHTTPClient([
+                OllamaUsageClient.usagePath: ok(usageJSON),
+                OllamaUsageClient.accountPath: ok(accountJSON)
+            ]),
+            keychain: FakeKeychain("wos-session=abc"),
+            resetSource: FakeResetSource(result: nil, error: OllamaAuthError.notSignedIn),
+            resetCache: OllamaResetCache(userDefaults: defaults),
+            now: now
+        )
+
+        _ = await provider.refresh()
+
+        XCTAssertNil(defaults.object(forKey: OllamaResetCache.defaultsKey))
+    }
+
+    /// The server has rejected the session regardless of local cleanup, so a failing keychain delete
+    /// must not keep the Sign In button hidden or leave stale cached resets behind.
+    func testSignedOutResetSourceClearsStateEvenWhenKeychainDeleteFails() async {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let suite = "ollamaProviderDeleteFailure.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        // Seed an elapsed session + future weekly so `current` reports the cache stale and the source runs.
+        defaults.set(["session": now.addingTimeInterval(-3600).timeIntervalSince1970,
+                      "weekly": now.addingTimeInterval(86400).timeIntervalSince1970],
+                     forKey: OllamaResetCache.defaultsKey)
+        let provider = OllamaProvider(
+            authStore: OllamaAuthStore(
+                files: FakeFiles([OllamaAuthStore.keyPath: testPrivateKeyPEM]),
+                keychain: DeleteFailingKeychain("wos-session=abc")
+            ),
+            usageClient: OllamaUsageClient(
+                http: RoutedHTTPClient([
+                    OllamaUsageClient.usagePath: ok(usageJSON),
+                    OllamaUsageClient.accountPath: ok(accountJSON)
+                ]),
+                now: { now }
+            ),
+            resetSource: FakeResetSource(result: nil, error: OllamaAuthError.notSignedIn),
+            resetCache: OllamaResetCache(userDefaults: defaults),
+            now: { now }
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertFalse(provider.hasStoredWebSession())
+        XCTAssertNil(defaults.object(forKey: OllamaResetCache.defaultsKey),
+                     "cache must clear even when the keychain delete fails")
+    }
+
+    /// A transport/parse failure is transient: it must leave the stored session in place so a flaky
+    /// network never signs the user out.
+    func testTransientResetFailureKeepsTheStoredSession() async {
+        let keychain = FakeKeychain("wos-session=abc")
+        let provider = makeProvider(
+            http: RoutedHTTPClient([
+                OllamaUsageClient.usagePath: ok(usageJSON),
+                OllamaUsageClient.accountPath: ok(accountJSON)
+            ]),
+            keychain: keychain,
+            resetSource: FakeResetSource(result: nil, error: OllamaUsageError.connectionFailed)
+        )
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertTrue(provider.hasStoredWebSession())
+    }
+
+    /// A reset-source failure is best-effort: it must leave the meters intact and must not turn the
+    /// whole snapshot into an error.
+    func testSourceFailureYieldsNilResetsWithoutErrorSnapshot() async {
+        let provider = makeProvider(http: RoutedHTTPClient([
+            OllamaUsageClient.usagePath: ok(usageJSON),
+            OllamaUsageClient.accountPath: ok(accountJSON)
+        ]), resetSource: FakeResetSource(result: nil, error: OllamaAuthError.notSignedIn),
+           sessionHeader: "wos-session=abc")
+
+        let snapshot = await provider.refresh()
+
+        XCTAssertNil(snapshot.errorCategory)
+        XCTAssertEqual(snapshot.lines.map(\.label), ["Session", "Weekly", "Last 4 Weeks"])
+        guard case .progress(_, _, _, _, let reset, _, _) = snapshot.lines[0] else { return XCTFail() }
+        XCTAssertNil(reset)
+    }
+}
+
+/// The in-app Sign In button is capability-driven, not hardcoded: only providers that declare
+/// `supportsInAppSignIn` render it (Ollama today).
+@MainActor
+final class ProviderSignInCapabilityTests: XCTestCase {
+    func testOllamaOptsIntoInAppSignIn() {
+        XCTAssertTrue(OllamaProvider().provider.supportsInAppSignIn)
+    }
+
+    func testOtherProvidersDoNotOptIntoInAppSignIn() {
+        XCTAssertFalse(CursorProvider().provider.supportsInAppSignIn)
     }
 }

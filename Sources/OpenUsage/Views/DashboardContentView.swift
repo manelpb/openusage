@@ -12,6 +12,9 @@ struct DashboardContentView: View {
 
     @Binding var reorderLift: ReorderLift?
     @Binding var scrollPosition: ScrollPosition
+    /// Forwarded to the grouped list: invoked with a provider ID when its header's Sign In button is
+    /// tapped. `nil` when the caller offers no in-app sign-in.
+    var onSignIn: ((String) -> Void)?
 
     @AppStorage(DensitySetting.key) private var density = DensitySetting.regular
     @AppStorage(TotalSpendSetting.key) private var showTotalSpend = true
@@ -64,7 +67,8 @@ struct DashboardContentView: View {
         } else {
             WidgetGroupedListView(
                 reorderSpaceName: reorderSpaceName,
-                reorderLift: $reorderLift
+                reorderLift: $reorderLift,
+                onSignIn: onSignIn
             )
         }
     }
