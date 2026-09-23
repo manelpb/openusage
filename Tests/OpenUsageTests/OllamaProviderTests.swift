@@ -266,7 +266,8 @@ final class OllamaUsageMapperTests: XCTestCase {
         XCTAssertEqual(descriptors.filter(\.isProjectionSummary).map(\.id), ["ollama.projection"])
         let labels = descriptors.filter { !$0.isProjectionSummary }.map(\.metricLabel)
 
-        XCTAssertEqual(mapped.lines.map(\.label), labels)
+        // This captured response predates the monthly meter and must still omit absent limits.
+        XCTAssertEqual(mapped.lines.map(\.label), labels.filter { $0 != "Monthly" })
     }
 
     func testMissingLimitsIsALoudFailureRatherThanAnEmptyDashboard() {

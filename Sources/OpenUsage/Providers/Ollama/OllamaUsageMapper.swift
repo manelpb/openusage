@@ -6,16 +6,18 @@ import Foundation
 ///
 ///     {"activity": {"cost": "0.00000", "period": {"type": "last_4_weeks", …}, "models": []},
 ///      "limits": {"session": {"usage": 0.349, "models": […]},
-///                 "weekly":  {"usage": 0.316, "models": […]}}}
+///                 "weekly":  {"usage": 0.316, "models": […]},
+///                 "monthly": {"usage": 0.053, "models": […]}}}
 ///
 /// `usage` is a **fraction** of the plan's allowance (0.349 → 34.9%), not a percentage.
 ///
-/// Neither limit in this payload carries a reset instant. When the web session supplies them
-/// (`OllamaResets`, read from the authenticated settings page), they are attached to the meters along
-/// with the documented window lengths (session every 5 hours, weekly every 7 days); without them the
-/// meters stay as before, with no `resetsAt` and no `periodDurationMs`, because a period with no reset
-/// date renders as a flat "Resets in 5h" that never counts down — a real countdown that is pure
-/// guesswork. The window lengths live in `docs/providers/ollama.md` as cadence too.
+/// Session and Weekly carry no reset instant in this payload. When the web session supplies them
+/// (`OllamaResets`, read from the authenticated settings page), they are attached to those meters
+/// along with the documented window lengths (session every 5 hours, weekly every 7 days); without them
+/// the meters stay as before, with no `resetsAt` and no `periodDurationMs`, because a period with no
+/// reset date renders as a flat "Resets in 5h" that never counts down — a real countdown that is pure
+/// guesswork. Monthly is reported without any reset instant or documented window length, so its meter
+/// never counts down. The window lengths live in `docs/providers/ollama.md` as cadence too.
 ///
 /// The endpoint is undocumented (it backs Ollama's own settings page), so every field is read
 /// defensively: a limit that isn't present is simply not metered, rather than shown as zero usage.
@@ -33,7 +35,7 @@ enum OllamaUsageMapper {
         return (plan, try usageLines(usageBody, resets: resets))
     }
 
-    /// Session + weekly meters and the recent-activity spend row.
+    /// Session, weekly, and monthly meters plus the recent-activity spend row.
     static func usageLines(_ body: Data, resets: OllamaResets? = nil) throws -> [MetricLine] {
         guard let root = ProviderParse.jsonObject(body) else {
             throw OllamaUsageError.invalidResponse
@@ -52,6 +54,11 @@ enum OllamaUsageMapper {
         if let weekly = percentLine(limits["weekly"], label: "Weekly",
                                     resetsAt: resets?.weekly, periodDurationMs: Self.weekMs) {
             lines.append(weekly)
+        }
+        // Monthly is reported without a reset instant, so it never carries a period duration.
+        if let monthly = percentLine(limits["monthly"], label: "Monthly",
+                                     resetsAt: nil, periodDurationMs: 0) {
+            lines.append(monthly)
         }
         if let activity = activityLine(root["activity"]) {
             lines.append(activity)

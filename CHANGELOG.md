@@ -1,5 +1,92 @@
 # Changelog
 
+## v0.7.13-beta.2
+
+### New Features
+- feat(claude): show usage-limit reset grants in a Rate Limit Resets row ([#1290](https://github.com/robinebers/openusage/pull/1290)) by @robinebers
+- feat(pricing): price Cursor Grok 4.7 in the supplement ([#1286](https://github.com/robinebers/openusage/pull/1286)) by @robinebers
+- Add `pullfrog.yml` workflow by @robinebers
+
+### Bug Fixes
+- fix(codex): attribute OpenCode 2 ChatGPT OAuth usage ([#1284](https://github.com/robinebers/openusage/pull/1284)) by @validatedev
+- fix(ollama): display monthly cloud usage limit ([#1270](https://github.com/robinebers/openusage/pull/1270)) by @robinebers
+
+### Chores
+- chore(deps): bump github.com/sindresorhus/keyboardshortcuts ([#1281](https://github.com/robinebers/openusage/pull/1281)) by @dependabot
+- chore(deps): bump github.com/posthog/posthog-ios from 3.72.0 to 3.76.0 ([#1282](https://github.com/robinebers/openusage/pull/1282)) by @dependabot
+- chore(deps): bump github.com/sparkle-project/sparkle ([#1283](https://github.com/robinebers/openusage/pull/1283)) by @dependabot
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.13-beta.1...v0.7.13-beta.2](https://github.com/robinebers/openusage/compare/v0.7.13-beta.1...v0.7.13-beta.2)
+
+- [333401f](https://github.com/robinebers/openusage/commit/333401fa75748b649cc3f657e9e6d8b6044197b3) fix(codex): attribute OpenCode 2 ChatGPT OAuth usage (#1284) by @validatedev
+- [939f41c](https://github.com/robinebers/openusage/commit/939f41cda6612d016851e3befa7a11b3c983e095) fix(ollama): display monthly cloud usage limit (#1270) by @robinebers
+- [0018945](https://github.com/robinebers/openusage/commit/00189454816cc3d815a166fa1369d6fe67dd2405) feat(claude): show usage-limit reset grants in a Rate Limit Resets row (#1290) by @robinebers
+- [16fed0f](https://github.com/robinebers/openusage/commit/16fed0fa0226d30354e7f0818fddbcd83cabaa33) feat(pricing): price Cursor Grok 4.7 in the supplement (#1286) by @robinebers
+- [7caf4ca](https://github.com/robinebers/openusage/commit/7caf4caab4970701ccaeae3798a71e9995847001) chore(deps): bump github.com/sindresorhus/keyboardshortcuts (#1281) by @dependabot
+- [3db68ec](https://github.com/robinebers/openusage/commit/3db68ecde535f0792e974060852472986208d03c) chore(deps): bump github.com/posthog/posthog-ios from 3.72.0 to 3.76.0 (#1282) by @dependabot
+- [3a2ef2a](https://github.com/robinebers/openusage/commit/3a2ef2a41e547a2ab676561b82ea0258891d310c) chore(deps): bump github.com/sparkle-project/sparkle (#1283) by @dependabot
+- [3a5d167](https://github.com/robinebers/openusage/commit/3a5d1672830c536be39e0430aee28539acf65d06) Add `pullfrog.yml` workflow by @robinebers
+
+## v0.7.13-beta.1
+
+### New Features
+- Add Codex Swap account support ([#1264](https://github.com/robinebers/openusage/pull/1264)) by @maddada
+
+### Chores
+- Isolate Codex local-spend tests from real pi/OpenCode history ([#1271](https://github.com/robinebers/openusage/pull/1271)) by @manelpb
+- Update PostHog from 3.71.0 to 3.72.0 ([#1249](https://github.com/robinebers/openusage/pull/1249)) by @app/dependabot
+- Record the v0.7.12 changelog by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.12...v0.7.13-beta.1](https://github.com/robinebers/openusage/compare/v0.7.12...v0.7.13-beta.1)
+
+- [7196244](https://github.com/robinebers/openusage/commit/71962448367c18c05e55bf21ac3a82b367a0912f) docs: changelog for v0.7.12 by @robinebers
+- [7998935](https://github.com/robinebers/openusage/commit/7998935c61b7e387338f28fa4f87f5b1e4d7a6e0) test: isolate Codex local-spend test from real pi/OpenCode history (#1271) by @manelpb
+- [56378e5](https://github.com/robinebers/openusage/commit/56378e5765f85d38ff413036fd984afe3d4664e4) Add Codex Swap account support (#1264) by @maddada
+- [86df736](https://github.com/robinebers/openusage/commit/86df736eb3099cd3f61806bf6c30e4baf967b8f9) chore(deps): bump github.com/posthog/posthog-ios from 3.71.0 to 3.72.0 (#1249) by @app/dependabot
+
+## v0.7.12
+
+### New Features
+- Add Muse Spark 1.3 effort variants to model pricing ([#1244](https://github.com/robinebers/openusage/pull/1244)) by @validatedev
+
+### Bug Fixes
+- Discover Claude Swap accounts and isolate their usage ([#1226](https://github.com/robinebers/openusage/pull/1226)) by @maddada
+- Handle exhausted Devin weekly quota when percentage is omitted ([#1251](https://github.com/robinebers/openusage/pull/1251)) by @robinebers
+- Keep Claude usage records whose nested iteration model is null ([#1261](https://github.com/robinebers/openusage/pull/1261)) by @robinebers
+- Read Claude plan badges from Anthropic's live profile ([#1262](https://github.com/robinebers/openusage/pull/1262)) by @robinebers
+- Separate Cursor Grok Bot mode pricing rates ([#1246](https://github.com/robinebers/openusage/pull/1246)) by @robinebers
+- Price Codex reserve usage at Luna rates ([#1247](https://github.com/robinebers/openusage/pull/1247)) by @robinebers
+- Avoid repeated Claude session ownership scans ([#1245](https://github.com/robinebers/openusage/pull/1245)) by @robinebers
+- Attribute nested Claude workflow usage to parent sessions ([#1241](https://github.com/robinebers/openusage/pull/1241)) by @robinebers
+- Exempt keep-open issues from stale auto-close ([#1225](https://github.com/robinebers/openusage/pull/1225)) by @robinebers
+
+### Chores
+- Record changelogs for v0.7.12-beta.1 and beta.2 by @robinebers
+
+---
+
+### Changelog
+**Full Changelog**: [v0.7.11...v0.7.12](https://github.com/robinebers/openusage/compare/v0.7.11...v0.7.12)
+
+- [3b84fec](https://github.com/robinebers/openusage/commit/3b84fec518d5b3775adb93456fa8af7330c852d5) docs: changelog for v0.7.12-beta.2 by @robinebers
+- [a0b408c](https://github.com/robinebers/openusage/commit/a0b408cd6bf5829fe9d27bfb6b91a54624a4a56a) fix: discover Claude Swap accounts and isolate their usage (#1226) by @maddada
+- [6a28ace](https://github.com/robinebers/openusage/commit/6a28acec9a87320f88f5056c5ba9dd3daacf3167) Fix exhausted Devin weekly quota when percentage is omitted (#1251) by @robinebers
+- [da03748](https://github.com/robinebers/openusage/commit/da0374816ecd8f5a9acfc42f8ff8b80d8e13402d) fix(claude): keep usage records whose nested iteration model is null (#1261) by @robinebers
+- [ced86a1](https://github.com/robinebers/openusage/commit/ced86a14f46156201456ba3359097d26671320ed) fix(claude): read the plan badge from Anthropic's live profile (#1262) by @robinebers
+- [bb055e2](https://github.com/robinebers/openusage/commit/bb055e26ee7ac65b982947cf6e3df6feda10dcca) docs: changelog for v0.7.12-beta.1 by @robinebers
+- [cd7900b](https://github.com/robinebers/openusage/commit/cd7900b7d7afd6c6d1ecddc9e6b6f315c7e1205e) fix(pricing): separate Cursor Grok Bot mode rates (#1246) by @robinebers
+- [639bdbf](https://github.com/robinebers/openusage/commit/639bdbf98b766ac6622974db61e992c4884c2754) fix(codex): price reserve usage at Luna rates (#1247) by @robinebers
+- [29a2b84](https://github.com/robinebers/openusage/commit/29a2b84f7488c14ddd5fedfe7db98363eb1d70a9) Fix repeated Claude session ownership scans (#1245) by @robinebers
+- [adf0110](https://github.com/robinebers/openusage/commit/adf0110c048f8bfef79a83a3080c9e23a86d5e1c) fix: attribute nested Claude workflow usage to parent sessions (#1241) by @robinebers
+- [dd02c12](https://github.com/robinebers/openusage/commit/dd02c1276594ed35ba85e6c09c1a2bfcafab13c3) feat(pricing): integrate Muse Spark 1.3 effort variants (#1244) by @validatedev
+- [70dea9a](https://github.com/robinebers/openusage/commit/70dea9a8fa21ed205aa9ad625b416a1e7792d5a1) fix: exempt keep-open issues from stale auto-close (#1225) by @robinebers
+
 ## v0.7.12-beta.2
 
 ### Bug Fixes

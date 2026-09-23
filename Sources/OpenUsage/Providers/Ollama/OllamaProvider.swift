@@ -46,6 +46,9 @@ final class OllamaProvider: ProviderRuntime {
             .percent(id: "ollama.weekly", provider: provider, title: "Weekly",
                      metricLabel: "Weekly")
                 .exportingLimit("weekly", unit: "percent"),
+            .percent(id: "ollama.monthly", provider: provider, title: "Monthly",
+                     metricLabel: "Monthly")
+                .exportingLimit("monthly", unit: "percent"),
             // Derived from the Session/Weekly meters above; renders "No data" until a web session supplies
             // reset instants — see OllamaResetSource.
             .projectionSummary(provider: provider),
