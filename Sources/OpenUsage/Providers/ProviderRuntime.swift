@@ -45,11 +45,17 @@ protocol ProviderRuntime: AnyObject {
     /// Sign In affordance. False for every provider except those that capture a session separately from
     /// the credential `refresh()` reads (Ollama's browser cookie).
     func hasStoredWebSession() -> Bool
+
+    /// Hands the provider the snapshot painted from the launch cache, called once at launch and only
+    /// when the entry's account stamp matched the card's known identity. Providers whose in-memory
+    /// fallback state doesn't survive a relaunch can hold it for their first degraded refresh.
+    func adoptLaunchSnapshot(_ snapshot: ProviderSnapshot)
 }
 
 extension ProviderRuntime {
     var allowsCachedLocalHistory: Bool { true }
     func hasStoredWebSession() -> Bool { false }
+    func adoptLaunchSnapshot(_ snapshot: ProviderSnapshot) {}
 }
 
 /// Run a blocking, `Sendable` credential load off the MainActor.

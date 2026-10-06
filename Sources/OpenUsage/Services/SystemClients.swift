@@ -248,6 +248,9 @@ protocol KeychainAccessing: Sendable {
     /// Delete the current user's generic password for `service`. Used to drop a stored web session once
     /// the server rejects it, so a stale cookie isn't kept.
     func deleteGenericPasswordForCurrentUser(service: String) throws
+
+    /// Update the item belonging to this exact account, without changing another account's login.
+    func writeGenericPassword(service: String, account: String, value: String) throws
 }
 
 extension KeychainAccessing {
@@ -267,6 +270,12 @@ extension KeychainAccessing {
     /// `SecurityKeychainAccessor` overrides this to pass `-a <account>`.
     func readGenericPassword(service: String, account: String) throws -> String? {
         try readGenericPassword(service: service)
+    }
+
+    /// An accessor without scoped-write support must fail rather than drop the account and risk
+    /// overwriting a different login. The production accessor implements the explicit `-a` write.
+    func writeGenericPassword(service: String, account: String, value: String) throws {
+        throw KeychainError.writeFailed("Account-scoped Keychain writes are unavailable.")
     }
 
     /// Whether an item exists for `service`, without reading its secret. `nil` means the probe
@@ -348,6 +357,10 @@ struct SecurityKeychainAccessor: KeychainAccessing {
 
     func writeGenericPassword(service: String, value: String) throws {
         try writePassword(["add-generic-password", "-U", "-s", service, "-w", value])
+    }
+
+    func writeGenericPassword(service: String, account: String, value: String) throws {
+        try writePassword(["add-generic-password", "-U", "-a", account, "-s", service, "-w", value])
     }
 
     func writeGenericPasswordForCurrentUser(service: String, value: String) throws {

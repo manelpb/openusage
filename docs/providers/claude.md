@@ -66,6 +66,10 @@ A `CLAUDE_CODE_OAUTH_TOKEN` — usually a long-lived `claude setup-token` — ca
 
 If one source holds an expired or "locked out" token, OpenUsage falls back to the others — so signing in again with `claude` outside the app is picked up on the next refresh, without restarting OpenUsage. Claude Code tokens are refreshed automatically; rotated tokens are written back only while the ordered login candidates still match the start of the refresh, so a newly added higher-priority login wins. Claude Desktop tokens are never refreshed or written by OpenUsage.
 
+Saving a refreshed Claude Code token updates only its access token, refresh token, and expiry in the
+latest credential document. MCP logins and other Claude Code fields are preserved, including changes
+made while OpenUsage was refreshing.
+
 ## Claude Swap accounts
 
 OpenUsage discovers the saved accounts in Claude Swap's `~/.claude-swap-backup/sequence.json`
@@ -128,7 +132,7 @@ Local spend does not require a Claude OAuth login. If Claude Code uses an API-ke
 - **"Claude Desktop login found"** — refresh manually and choose **Always Allow** when macOS asks for access to `Claude Safe Storage`.
 - **"Claude Desktop login is stale"** — open Claude Desktop so it can renew the login, then refresh OpenUsage.
 - **"Re-login for live usage"** (an amber warning on the Claude header) — your saved login can authenticate for inference but can't read your subscription limits, because it lacks the `user:profile` access (this is what an inference-only token from `claude setup-token` carries). Run `claude` and sign in again with your Claude account, then refresh; the spend tiles keep working in the meantime.
-- **"Updates blocked by Anthropic"** (an amber warning on the Claude header) — the usage API is throttling OpenUsage. It keeps the last values from the same login, shows when it will retry, and backs off in the meantime. A different login starts with a fresh cache and cooldown.
+- **"Updates blocked by Anthropic"** (an amber warning on the Claude header) — the usage API is throttling OpenUsage. It keeps the last values from the same login — including, right after a relaunch, the limits cached for the same verified account (windows that have already reset are dropped) — shows when it will retry, and backs off in the meantime. A different login starts with a fresh cache and cooldown.
 - **Spend tiles show "No data"** — OpenUsage found no Claude Code logs in the last 30 days. If your logs live somewhere custom, set `CLAUDE_CONFIG_DIR` so both Claude Code and OpenUsage look in the same place.
 
 ## Under the hood

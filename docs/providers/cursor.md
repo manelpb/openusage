@@ -14,6 +14,11 @@ Tracks your Cursor plan usage using the login from the Cursor app.
 | Requests | Optional copy of the included request count vs. cap for custom layouts |
 | Credits | Credit balance left from grants and prepaid account balance |
 
+Teams seats with two usable model-pool percentages use those percentages instead of the legacy
+included-dollar cap. Total Usage uses Cursor's structured total percentage when supplied; it is
+unavailable when Cursor supplies only the two pools. Older team accounts without usable pool data
+keep their dollar meter, including accounts that return zero placeholders beside positive spend.
+
 When Cursor reports your plan name, OpenUsage shows it beside the provider name.
 
 Grok Bot has its own usage allowance, separate from Cursor's normal billing-cycle meter. Its widget
@@ -26,7 +31,7 @@ Just be signed into the Cursor app. OpenUsage reads Cursor's local state databas
 
 ## Spend history
 
-Today, Yesterday, Last 30 Days, and Usage Trend come from Cursor's usage export. OpenUsage uses the exported token counts and shared model pricing to estimate the cost locally. Cursor's export may occasionally arrive late, so the newest figures can lag behind current activity. OpenUsage leaves isolated malformed rows out instead of silently counting broken values as zero. A failed download, invalid export schema, or broken CSV structure leaves spend history unavailable for that refresh. Each failure is recorded in the diagnostic log without including the exported usage data.
+Today, Yesterday, Last 30 Days, and Usage Trend come from Cursor's usage export. OpenUsage uses the exported token counts and shared model pricing to estimate the cost locally. Cursor's export may occasionally arrive late, so the newest figures can lag behind current activity. OpenUsage leaves isolated malformed rows out instead of silently counting broken values as zero. A failed download, an export that takes longer than 20 seconds, invalid export schema, or broken CSV structure leaves spend history unavailable for that refresh; live plan usage still updates. Each failure is recorded in the diagnostic log without including the exported usage data.
 
 ## Troubleshooting
 
