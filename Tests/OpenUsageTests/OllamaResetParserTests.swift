@@ -38,6 +38,31 @@ final class OllamaResetParserTests: XCTestCase {
         let resets = OllamaResetParser.resets(fromText: text, now: now)
         XCTAssertEqual(resets?.session, now.addingTimeInterval(2 * 3600))
         XCTAssertEqual(resets?.weekly, now.addingTimeInterval(5 * 86400))
+        XCTAssertEqual(resets?.sessionPercent, 3.2)
+        XCTAssertEqual(resets?.weeklyPercent, 32.3)
+    }
+
+    func testParsesUsagePercentagesAlongsideTheResets() {
+        // Ollama's settings page now carries the utilization percentages; the signed usage API no longer
+        // does, so the scrape is the source for both the percentages and the resets.
+        let html = """
+        <span class="text-sm">Session usage</span><span>7.7% used</span>
+        <div data-time="2026-10-11T22:00:00Z"></div>
+        <span class="text-sm">Weekly usage</span><span>18.1% used</span>
+        <div data-time="2026-10-12T00:00:00Z"></div>
+        """
+        let resets = OllamaResetParser.resets(fromHTML: html)
+        XCTAssertEqual(resets?.sessionPercent, 7.7)
+        XCTAssertEqual(resets?.weeklyPercent, 18.1)
+        XCTAssertEqual(resets?.session, OpenUsageISO8601.date(from: "2026-10-11T22:00:00Z"))
+        XCTAssertEqual(resets?.weekly, OpenUsageISO8601.date(from: "2026-10-12T00:00:00Z"))
+    }
+
+    func testPercentagesWithoutResetsStillParse() {
+        let html = "Session usage 42% used"
+        let resets = OllamaResetParser.resets(fromText: html, now: Date())
+        XCTAssertEqual(resets?.sessionPercent, 42)
+        XCTAssertNil(resets?.session)
     }
 
     func testTextFallbackParsesSingleWindowWhenWeeklyAnchorMissing() {

@@ -101,10 +101,13 @@ final class OllamaProvider: ProviderRuntime {
             return ProviderSnapshot.error(provider: provider, error: OllamaAuthError.missingKey)
         }
 
-        // The usage endpoint is required; the account endpoint is best-effort (plan name only), so a
-        // failure there must not blank out the meters.
-        let usage = await load { try await usageClient.fetchUsage(key: key) }
+        // The account endpoint is best-effort (plan name only). The Session/Weekly meters now come from
+        // the authenticated settings page, and the signed usage call is best-effort too: Ollama stopped
+        // returning a `limits` block there, so its failure must not blank the card. It is only surfaced
+        // when nothing else produced a meter either.
         let account = await loadAccount { try await usageClient.fetchAccount(key: key) }
+        let resets = await resolveResets(header: sessionHeader)
+        let usage = await loadUsage { try await usageClient.fetchUsage(key: key) }
 
         var accountBody: Data?
         var warning: String?
@@ -119,29 +122,39 @@ final class OllamaProvider: ProviderRuntime {
             warning = Self.planWarning
         }
 
+        let usageBody: Data?
         switch usage {
-        case .success(let body):
-            do {
-                let resets = await resolveResets(header: sessionHeader)
-                let mapped = try OllamaUsageMapper.map(usageBody: body, accountBody: accountBody,
-                                                       resets: resets)
-                // A 200 carrying a body OpenUsage can't read drops the badge exactly as silently as a
-                // failed request did, so it earns the same notice. An account that simply has no plan
-                // (`.absent`) stays quiet — that is ordinary, not a fault.
-                if warning == nil, mapped.plan == .unreadable {
-                    AppLog.warn(.refresh, "ollama plan response unreadable; meters unaffected")
-                    warning = Self.planWarning
+        case .success(let body): usageBody = body
+        case .authFailure, .failed: usageBody = nil
+        }
+
+        do {
+            let mapped = try OllamaUsageMapper.map(usageBody: usageBody, accountBody: accountBody,
+                                                   resets: resets)
+            // The signed call's failure is only worth reporting when the settings scrape produced nothing
+            // either — otherwise the meters are current and the failure is incidental.
+            if mapped.lines == [.noUsageData], resets == nil {
+                switch usage {
+                case .authFailure:
+                    // The key parsed and signed fine, so a 401/403 means ollama.com doesn't know it: the
+                    // user has Ollama installed but has never run `ollama signin` (or has signed out since).
+                    return ProviderSnapshot.error(provider: provider, error: OllamaAuthError.notSignedIn)
+                case .failed(let error):
+                    return ProviderSnapshot.error(provider: provider, error: error)
+                case .success:
+                    break
                 }
-                return ProviderSnapshot.make(provider: provider, plan: mapped.plan.name, lines: mapped.lines,
-                                             refreshedAt: now(), warning: warning)
-            } catch {
-                return ProviderSnapshot.error(provider: provider, error: error)
             }
-        case .authFailure:
-            // The key parsed and signed fine, so a 401/403 means ollama.com doesn't know it: the user has
-            // Ollama installed but has never run `ollama signin` (or has signed out since).
-            return ProviderSnapshot.error(provider: provider, error: OllamaAuthError.notSignedIn)
-        case .failed(let error):
+            // A response OpenUsage can't read drops the badge exactly as silently as a failed request did,
+            // so it earns the same notice. An account that simply has no plan (`.absent`) stays quiet —
+            // that is ordinary, not a fault.
+            if warning == nil, mapped.plan == .unreadable {
+                AppLog.warn(.refresh, "ollama plan response unreadable; meters unaffected")
+                warning = Self.planWarning
+            }
+            return ProviderSnapshot.make(provider: provider, plan: mapped.plan.name, lines: mapped.lines,
+                                         refreshedAt: now(), warning: warning)
+        } catch {
             return ProviderSnapshot.error(provider: provider, error: error)
         }
     }
@@ -179,9 +192,10 @@ final class OllamaProvider: ProviderRuntime {
         }
     }
 
-    /// Run the required usage call and classify the outcome: the body on 2xx, an auth failure on
-    /// 401/403, or a typed failure for any other non-2xx or transport error.
-    private func load(_ call: () async throws -> HTTPResponse) async -> UsageResult {
+    /// Run the signed usage call and classify the outcome. It is best-effort now — the Session/Weekly
+    /// meters come from the settings page — but its failure is still surfaced when the settings scrape
+    /// produced nothing either.
+    private func loadUsage(_ call: () async throws -> HTTPResponse) async -> UsageResult {
         do {
             let response = try await call()
             if response.statusCode == 401 || response.statusCode == 403 { return .authFailure }

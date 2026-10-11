@@ -47,7 +47,7 @@ enum OllamaUsageMapper {
     /// `(plan, lines)` from the usage payload plus the optional account payload. `accountBody` may be
     /// `nil` — the plan request is best-effort and must never blank out the meters. `resets` is the
     /// optional pair of reset instants from the settings page; when absent the meters carry no countdown.
-    static func map(usageBody: Data, accountBody: Data?,
+    static func map(usageBody: Data?, accountBody: Data?,
                     resets: OllamaResets? = nil) throws -> (plan: OllamaPlan, lines: [MetricLine]) {
         // A `nil` body means the account request itself failed, which the provider has already reported;
         // classifying it as unreadable here would warn about the same thing twice.
@@ -56,27 +56,29 @@ enum OllamaUsageMapper {
     }
 
     /// Session, weekly, and monthly meters plus the recent-activity spend row.
-    static func usageLines(_ body: Data, resets: OllamaResets? = nil) throws -> [MetricLine] {
-        guard let root = ProviderParse.jsonObject(body) else {
-            throw OllamaUsageError.invalidResponse
+    static func usageLines(_ body: Data?, resets: OllamaResets? = nil) throws -> [MetricLine] {
+        var root: [String: Any] = [:]
+        if let body {
+            guard let parsed = ProviderParse.jsonObject(body) else {
+                throw OllamaUsageError.invalidResponse
+            }
+            root = parsed
         }
-        // `limits` is the reason this endpoint exists; its absence means the response isn't the shape
-        // OpenUsage understands, which is a loud failure rather than an empty dashboard.
-        guard let limits = root["limits"] as? [String: Any] else {
-            throw OllamaUsageError.invalidResponse
-        }
+        // `limits` is optional now: Ollama stopped returning it, so the settings-page scrape supplies
+        // the percentages instead. When present (older accounts) it still wins.
+        let limits = root["limits"] as? [String: Any]
 
         var lines: [MetricLine] = []
-        if let session = percentLine(limits["session"], label: "Session",
+        if let session = percentLine(limits?["session"], percent: resets?.sessionPercent, label: "Session",
                                      resetsAt: resets?.session, periodDurationMs: Self.sessionMs) {
             lines.append(session)
         }
-        if let weekly = percentLine(limits["weekly"], label: "Weekly",
+        if let weekly = percentLine(limits?["weekly"], percent: resets?.weeklyPercent, label: "Weekly",
                                     resetsAt: resets?.weekly, periodDurationMs: Self.weekMs) {
             lines.append(weekly)
         }
-        // Monthly is reported without a reset instant, so it never carries a period duration.
-        if let monthly = percentLine(limits["monthly"], label: "Monthly",
+        // Monthly only ever came from the signed payload and carries no reset instant.
+        if let monthly = percentLine(limits?["monthly"], percent: nil, label: "Monthly",
                                      resetsAt: nil, periodDurationMs: 0) {
             lines.append(monthly)
         }
@@ -106,17 +108,25 @@ enum OllamaUsageMapper {
 
     // MARK: - Private
 
-    /// One limit entry → a 0–100% meter. `usage` is a fraction of the plan allowance, so it scales by 100.
-    /// A missing entry or a missing `usage` yields no line: the meter is absent, not at zero. The period
-    /// duration is only attached alongside a real reset instant — a duration without a reset renders a
-    /// static "Resets in 5h" that never counts down.
-    private static func percentLine(_ entry: Any?, label: String,
+    /// One window → a 0–100% meter. The percentage comes from the signed payload's `limits` entry
+    /// (`usage`, a fraction of the plan allowance, scaled by 100) when present, otherwise from the
+    /// settings-page scrape (`percent`, already 0–100). Neither present yields no line: the meter is
+    /// absent, not at zero. The period duration is only attached alongside a real reset instant — a
+    /// duration without a reset renders a static "Resets in 5h" that never counts down.
+    private static func percentLine(_ entry: Any?, percent: Double?, label: String,
                                     resetsAt: Date?, periodDurationMs: Int) -> MetricLine? {
-        guard let entry = entry as? [String: Any],
-              let fraction = ProviderParse.number(entry["usage"]) else { return nil }
+        let used: Double?
+        if let entry = entry as? [String: Any], let fraction = ProviderParse.number(entry["usage"]) {
+            used = ProviderParse.clampPercent(fraction * 100)
+        } else if let percent {
+            used = ProviderParse.clampPercent(percent)
+        } else {
+            used = nil
+        }
+        guard let used else { return nil }
         return .progress(
             label: label,
-            used: ProviderParse.clampPercent(fraction * 100),
+            used: used,
             limit: 100,
             format: .percent,
             resetsAt: resetsAt,

@@ -270,10 +270,22 @@ final class OllamaUsageMapperTests: XCTestCase {
         XCTAssertEqual(mapped.lines.map(\.label), labels.filter { $0 != "Monthly" })
     }
 
-    func testMissingLimitsIsALoudFailureRatherThanAnEmptyDashboard() {
-        XCTAssertThrowsError(try OllamaUsageMapper.usageLines(data(#"{"activity":{"cost":"0"}}"#))) { error in
-            XCTAssertEqual(error as? OllamaUsageError, .invalidResponse)
+    func testMissingLimitsFallsBackToTheSettingsScrape() throws {
+        // Ollama stopped returning a `limits` block in the signed payload. Its absence is no longer a hard
+        // failure: the Session/Weekly percentages come from the settings page, and a signed body that only
+        // carries an activity row still maps that row.
+        XCTAssertEqual(try OllamaUsageMapper.usageLines(data(#"{"activity":{"cost":"0"}}"#)).map(\.label),
+                       ["Last 4 Weeks"])
+
+        // The percentages now arrive from the settings scrape, with no signed body at all.
+        let scraped = try OllamaUsageMapper.usageLines(nil, resets: OllamaResets(sessionPercent: 7.7, weeklyPercent: 18.1))
+        XCTAssertEqual(scraped.map(\.label), ["Session", "Weekly"])
+        for line in scraped {
+            guard case .progress(_, let used, _, _, _, _, _) = line else { return XCTFail("expected a meter") }
+            XCTAssertEqual(used, line.label == "Session" ? 7.7 : 18.1, accuracy: 0.01)
         }
+
+        // A body that isn't JSON at all is still a loud failure (the provider logged a real fault).
         XCTAssertThrowsError(try OllamaUsageMapper.usageLines(data("not json"))) { error in
             XCTAssertEqual(error as? OllamaUsageError, .invalidResponse)
         }

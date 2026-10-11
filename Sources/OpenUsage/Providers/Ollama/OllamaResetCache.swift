@@ -1,12 +1,17 @@
 import Foundation
 
-/// Caches the reset instants scraped from Ollama's authenticated settings page.
+/// Caches the quota state scraped from Ollama's authenticated settings page.
 ///
-/// The signed usage API carries the meters but no reset times; those come from a separate web-session
-/// fetch. A reset instant stays meaningful until it passes, so caching the pair avoids hitting the
-/// settings page on every refresh without ever showing a countdown that has already run out.
+/// Ollama's signed usage API used to carry the meters but no reset times; the resets came from a separate
+/// web-session fetch. As of late 2026 the API no longer carries the meters either, so the settings page is
+/// the source for both the percentages and the resets. A reset instant stays meaningful until it passes,
+/// so caching the pair avoids hitting the settings page on every refresh without ever showing a countdown
+/// that has already run out.
 final class OllamaResetCache {
-    static let defaultsKey = "openusage.ollama.resets"
+    /// `v2` carries the utilization percentages as well as the reset instants. A `v1` entry holds resets
+    /// only, so leaving it in place would keep the meters empty forever: `current(now:)` short-circuits on
+    /// the cache and never refetches the page that now carries the percentages.
+    static let defaultsKey = "openusage.ollama.resets.v2"
 
     private let userDefaults: UserDefaults
 
@@ -14,18 +19,20 @@ final class OllamaResetCache {
         self.userDefaults = userDefaults
     }
 
-    /// The cached resets, but only while **every** stored instant is still in the future. If any
-    /// stored instant has elapsed the whole pair is treated as stale and `nil` is returned, so the
+    /// The cached quota state, but only while **every** stored reset instant is still in the future. If a
+    /// stored instant has elapsed the whole entry is treated as stale and `nil` is returned, so the
     /// provider refetches rather than attaching an expired reset (and the newly-started window is
-    /// recovered). `nil` also when nothing is cached.
+    /// recovered). A percent-only entry (no resets at all) stays valid. `nil` also when nothing is cached.
     func current(now: Date) -> OllamaResets? {
         guard let stored = userDefaults.dictionary(forKey: Self.defaultsKey) else { return nil }
         let resets = OllamaResets(
             session: (stored["session"] as? Double).map { Date(timeIntervalSince1970: $0) },
-            weekly: (stored["weekly"] as? Double).map { Date(timeIntervalSince1970: $0) }
+            weekly: (stored["weekly"] as? Double).map { Date(timeIntervalSince1970: $0) },
+            sessionPercent: stored["sessionPercent"] as? Double,
+            weeklyPercent: stored["weeklyPercent"] as? Double
         )
         let instants = [resets.session, resets.weekly].compactMap { $0 }
-        guard !instants.isEmpty, instants.allSatisfy({ $0 > now }) else { return nil }
+        guard instants.allSatisfy({ $0 > now }) else { return nil }
         return resets.sanitized(now: now)
     }
 
@@ -35,7 +42,8 @@ final class OllamaResetCache {
         userDefaults.removeObject(forKey: Self.defaultsKey)
     }
 
-    /// Persist only the future-dated instants. An already-elapsed instant is dropped rather than reused.
+    /// Persist only the future-dated instants plus the current percentages. An already-elapsed instant
+    /// is dropped rather than reused.
     func store(_ resets: OllamaResets, now: Date) {
         let future = resets.sanitized(now: now)
         var stored: [String: Double] = [:]
@@ -44,6 +52,12 @@ final class OllamaResetCache {
         }
         if let weekly = future.weekly {
             stored["weekly"] = weekly.timeIntervalSince1970
+        }
+        if let percent = future.sessionPercent {
+            stored["sessionPercent"] = percent
+        }
+        if let percent = future.weeklyPercent {
+            stored["weeklyPercent"] = percent
         }
         if stored.isEmpty {
             userDefaults.removeObject(forKey: Self.defaultsKey)
