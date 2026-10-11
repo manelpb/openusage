@@ -206,6 +206,25 @@ extension OpenCodeUsageError: CategorizedError {
     }
 }
 
+extension LiteLLMAuthError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .missingConfiguration: .notLoggedIn
+        case .invalidKey: .authInvalid
+        }
+    }
+}
+
+extension LiteLLMUsageError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .connectionFailed: .network
+        case .invalidResponse: .decoding
+        case .requestFailed(let status): ErrorCategory.http(status)
+        }
+    }
+}
+
 extension OpenRouterAuthError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {

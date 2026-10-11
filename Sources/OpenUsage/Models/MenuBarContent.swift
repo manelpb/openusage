@@ -96,6 +96,7 @@ enum MenuBarContentBuilder {
         case "today": return "T"
         case "yesterday": return "Y"
         case "last 30 days": return "M"
+        case "this month": return "Mo"
         default: return metricLabel
         }
     }

@@ -41,6 +41,13 @@ enum DefaultLayout {
         "grok.weekly", "grok.trend",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
 
+        "litellm.today", "litellm.month", "litellm.last30",
+        "litellm.provider.anthropic", "litellm.provider.openai", "litellm.provider.google",
+        "litellm.provider.azure", "litellm.provider.bedrock", "litellm.provider.xai",
+        "litellm.provider.deepseek", "litellm.provider.mistral", "litellm.provider.groq",
+        "litellm.provider.openrouter", "litellm.provider.ollama", "litellm.provider.together",
+        "litellm.provider.other",
+
         "ollama.session", "ollama.weekly", "ollama.monthly", "ollama.projection", "ollama.last4Weeks",
 
         "opencode.session", "opencode.weekly", "opencode.monthly", "opencode.trend", "opencode.projection",
@@ -84,6 +91,7 @@ enum DefaultLayout {
         "cursor.auto", "cursor.api",
         "copilot.premium",
         "deepseek.balance",
+        "litellm.today", "litellm.month",
         "ollama.session", "ollama.weekly",
         "openrouter.credits",
         "zai.session", "zai.weekly"
@@ -115,6 +123,14 @@ enum DefaultLayout {
         "copilot.orgCredits", "copilot.orgSpend", "copilot.chat", "copilot.completions",
         "devin.extra",
         "grok.payAsYouGo", "grok.today", "grok.yesterday", "grok.last30",
+        // LiteLLM: Today's gateway spend stays above the fold; the per-provider rows and the broader
+        // periods sit below the caret. Users toggle the providers they actually route to in Customize.
+        "litellm.month", "litellm.last30",
+        "litellm.provider.anthropic", "litellm.provider.openai", "litellm.provider.google",
+        "litellm.provider.azure", "litellm.provider.bedrock", "litellm.provider.xai",
+        "litellm.provider.deepseek", "litellm.provider.mistral", "litellm.provider.groq",
+        "litellm.provider.openrouter", "litellm.provider.ollama", "litellm.provider.together",
+        "litellm.provider.other",
         // Ollama: the Session, Weekly, and Monthly meters and the derived Run-out row stay above the
         // fold; the rolling four-week spend total (always $0.00 on a subscription, real only for
         // pay-as-you-go) sits below the caret.

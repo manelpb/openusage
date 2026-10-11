@@ -72,6 +72,7 @@ enum ProviderCatalog {
             DeepSeekProvider(),
             DevinProvider(),
             GrokProvider(),
+            LiteLLMProvider(),
             OllamaProvider(),
             OpenCodeProvider(),
             OpenRouterProvider(),
