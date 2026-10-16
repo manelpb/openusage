@@ -21,8 +21,8 @@ enum TokenRefreshOutcome: Sendable {
 struct AntigravityUsageClient: Sendable {
     static let lsService = "exa.language_server_pb.LanguageServerService"
     static let cloudCodeURLs = [
-        "https://daily-cloudcode-pa.googleapis.com",
-        "https://cloudcode-pa.googleapis.com"
+        "https://cloudcode-pa.googleapis.com",
+        "https://daily-cloudcode-pa.googleapis.com"
     ]
     static let fetchModelsPath = "/v1internal:fetchAvailableModels"
     static let loadCodeAssistPath = "/v1internal:loadCodeAssist"

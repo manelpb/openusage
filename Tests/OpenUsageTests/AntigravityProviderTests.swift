@@ -242,6 +242,31 @@ final class AntigravityProviderTests: XCTestCase {
         XCTAssertEqual(candidates.map(\.pid), [4276])
     }
 
+    func testDiscoverySkipsCandidateWithoutRequiredCSRFFlag() {
+        let options = LanguageServerDiscovery.Options(
+            processName: "agy",
+            markers: [],
+            csrfFlag: "--csrf_token",
+            portFlag: nil
+        )
+        struct FailOnLsofRunner: ProcessRunning {
+            func run(executable: String, arguments: [String], environment: [String: String], timeout: TimeInterval) throws -> ProcessResult {
+                if executable.hasSuffix("/ps") {
+                    return ProcessResult(exitCode: 0, stdout: "55510 agy\n", stderr: "")
+                }
+                XCTFail("lsof should not be called if required csrf flag is absent")
+                return ProcessResult(exitCode: 1, stdout: "", stderr: "")
+            }
+        }
+        let discovery = LanguageServerDiscovery(processRunner: FailOnLsofRunner())
+        XCTAssertNil(discovery.discover(options))
+    }
+
+    func testCloudCodeURLsPrioritizeProduction() {
+        XCTAssertEqual(AntigravityUsageClient.cloudCodeURLs.first, "https://cloudcode-pa.googleapis.com")
+        XCTAssertTrue(AntigravityUsageClient.cloudCodeURLs.contains("https://daily-cloudcode-pa.googleapis.com"))
+    }
+
     // MARK: - Keychain token extraction
 
     func testExtractTokenFromGoKeyringWrappedJSON() {
