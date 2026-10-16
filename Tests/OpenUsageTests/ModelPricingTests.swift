@@ -121,6 +121,35 @@ final class ModelPricingTests: XCTestCase {
         }
     }
 
+    func testGemini4ArgonEffortAndRouterAliasesUseBundledAPIRates() throws {
+        let pricing = TestPricing.bundled
+        let expected = rates(2.0, 10.0, cacheWrite: 2.0, cacheRead: 0.1)
+        let canonical = "gemini-4-argon"
+        let variants = [
+            canonical, "gemini-4-argon-trial", "gemini-4-argon-trial-high",
+            "gemini-4-argon-none", "gemini-4-argon-minimal", "gemini-4-argon-low",
+            "gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-xhigh",
+            "gemini-4-argon-preview", "gemini-4-argon-exp-a",
+            "Gemini 4 Argon", "Gemini 4 Argon (Low)", "Gemini 4 Argon (Medium)",
+            "Gemini 4 Argon (High)", "Gemini 4 Argon (Auto)", "Gemini 4 Argon (Auto Balanced)"
+        ]
+
+        for model in variants {
+            XCTAssertEqual(pricing.supplement.canonicalName(for: model), canonical, model)
+            XCTAssertEqual(pricing.resolve(model: model), expected, model)
+        }
+
+        let offline = ModelPricing(
+            supplement: pricing.supplement, primary: PricingCatalog(), secondary: PricingCatalog()
+        )
+        XCTAssertEqual(offline.resolve(model: "gemini-4-argon-high"), expected)
+        XCTAssertEqual(offline.resolve(model: "gemini-4-argon-trial"), expected)
+        for model in ["gemini-4-argon-bogus", "gemini-4-argon-high-fast"] {
+            XCTAssertNil(pricing.supplement.canonicalName(for: model), model)
+            XCTAssertNil(offline.resolve(model: model), model)
+        }
+    }
+
     func testModelResolutionNormalizesDatesProviderPrefixesAndSeparators() throws {
         let scenarios: [(catalogKey: String, model: String, expected: Double)] = [
             ("gpt-5.5", "gpt-5.5", 5),
